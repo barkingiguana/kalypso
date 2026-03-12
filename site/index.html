@@ -374,10 +374,8 @@ pip install kalypso
 <span class="cmt"># Create your root CA (once)</span>
 kalypso init
 
-<span class="cmt"># Trust it (macOS)</span>
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain \
-  ~/.kalypso/ca-cert.pem
+<span class="cmt"># Trust it (auto-detects your OS)</span>
+sudo kalypso trust
 
 <span class="cmt"># Issue a cert — valid 24 hours</span>
 kalypso issue myapp.local
@@ -491,6 +489,34 @@ cert.<span class="fn">Save</span>(<span class="str">"cert.pem"</span>, <span cla
                     <td class="cross">No</td>
                     <td class="cross">No</td>
                     <td class="check">Via ACME</td>
+                </tr>
+                <tr>
+                    <td>Key strength</td>
+                    <td class="check">ECDSA P-384</td>
+                    <td>P-256</td>
+                    <td>Varies</td>
+                    <td class="check">Configurable</td>
+                </tr>
+                <tr>
+                    <td>Key protection</td>
+                    <td class="check">0600 perms, fingerprints</td>
+                    <td class="cross">None</td>
+                    <td class="cross">None</td>
+                    <td class="check">Yes</td>
+                </tr>
+                <tr>
+                    <td>Native trust install</td>
+                    <td class="check">Built-in</td>
+                    <td class="check">Via Go binary</td>
+                    <td class="cross">Manual</td>
+                    <td class="cross">Manual</td>
+                </tr>
+                <tr>
+                    <td>External dependencies</td>
+                    <td class="check">None</td>
+                    <td class="cross">Go binary</td>
+                    <td class="check">None</td>
+                    <td class="cross">Go binary</td>
                 </tr>
                 <tr>
                     <td>Setup complexity</td>

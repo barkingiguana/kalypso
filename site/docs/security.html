@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Security Model — Kalypso Docs</title>
-    <meta name="description" content="Kalypso's security design: short-lived certs, constrained CA, threat model.">
+    <meta name="description" content="Kalypso's security design: ECDSA P-384, short-lived certs, constrained CA, native trust store management, threat model.">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -30,6 +30,17 @@
             <li><a href="security.html" class="active">Security Model</a></li>
             <li><a href="docker.html">Docker &amp; Compose</a></li>
         </ul>
+        <h4 style="margin-top:2rem">On this page</h4>
+        <ul>
+            <li><a href="#principles">Design Principles</a></li>
+            <li><a href="#crypto">Strong Cryptography</a></li>
+            <li><a href="#short-lived">Short-Lived Certs</a></li>
+            <li><a href="#root-ca">Constrained Root CA</a></li>
+            <li><a href="#leaf">Leaf Constraints</a></li>
+            <li><a href="#key-protection">Key Protection</a></li>
+            <li><a href="#trust-stores">Native Trust Stores</a></li>
+            <li><a href="#threat-model">Threat Model</a></li>
+        </ul>
     </aside>
 
     <main>
@@ -37,18 +48,29 @@
 
         <h2 id="principles">Design Principles</h2>
         <p>Kalypso is designed for <strong>local development only</strong>. It makes HTTPS easy in dev while minimizing the security risk of running a local CA.</p>
+        <ul>
+            <li><strong>Zero external dependencies</strong> — no third-party binaries. Trust store installation, certificate generation, and key management are all handled natively using Python's <code>cryptography</code> library and OS-native trust store commands.</li>
+            <li><strong>Defense in depth</strong> — short cert lifetimes, constrained CA, secure key permissions, and certificate fingerprints for audit trails.</li>
+        </ul>
+
+        <h2 id="crypto">Strong Cryptography</h2>
+        <ul>
+            <li><strong>ECDSA P-384</strong> keys — 192-bit security level</li>
+            <li><strong>SHA-384</strong> signatures — matched to P-384 curve strength</li>
+            <li>Stronger than what most dev CA tools use (P-256 / 128-bit)</li>
+        </ul>
 
         <h2 id="short-lived">Short-Lived Certificates</h2>
         <ul>
             <li>Default lifetime: <strong>24 hours</strong></li>
             <li>Maximum lifetime: <strong>7 days</strong></li>
             <li>If a dev cert leaks, it expires quickly</li>
-            <li>Compare: self-signed certs and mkcert use 10+ year lifetimes</li>
+            <li>Compare: self-signed certs typically use 10+ year lifetimes</li>
         </ul>
 
         <h2 id="root-ca">Constrained Root CA</h2>
         <ul>
-            <li>ECDSA P-256 keys (fast, secure, small)</li>
+            <li><strong>ECDSA P-384</strong> keys (192-bit security)</li>
             <li><code>pathLength=0</code> — the root CA cannot create sub-CAs</li>
             <li><code>keyUsage=keyCertSign,crlSign,digitalSignature</code> — nothing else</li>
             <li>Subject Key Identifier included for chain validation</li>
@@ -60,8 +82,39 @@
             <li><code>extendedKeyUsage: serverAuth</code> — only valid for TLS servers</li>
             <li><code>authorityKeyIdentifier</code> — links back to the issuing CA</li>
             <li>Unique serial number per certificate</li>
-            <li>Unique key pair per certificate</li>
+            <li>Unique key pair per certificate (ECDSA P-384)</li>
             <li>Only the domains you specify are covered (no implicit wildcards)</li>
+        </ul>
+
+        <h2 id="key-protection">Private Key Protection</h2>
+        <ul>
+            <li>CA key written with <strong>0600 permissions</strong> (owner read/write only)</li>
+            <li><code>os.open()</code> with explicit mode — no window of insecure permissions</li>
+            <li><code>kalypso status</code> — verify key permissions and CA fingerprint</li>
+            <li><code>kalypso load</code> — warns if key permissions are too open</li>
+        </ul>
+
+        <h2 id="fingerprints">Certificate Fingerprints</h2>
+        <ul>
+            <li>Every issued cert gets a <strong>SHA-256 fingerprint</strong> for audit trail</li>
+            <li>Displayed on <code>init</code>, <code>issue</code>, and <code>status</code> commands</li>
+            <li>Logged by the API server for every issuance</li>
+        </ul>
+
+        <h2 id="trust-stores">Native Trust Store Management</h2>
+        <p>Kalypso manages trust stores natively — no third-party binaries required.</p>
+        <ul>
+            <li><strong>macOS:</strong> <code>security add-trusted-cert</code> (System Keychain)</li>
+            <li><strong>Ubuntu/Debian:</strong> <code>update-ca-certificates</code></li>
+            <li><strong>Fedora/Arch:</strong> <code>trust anchor</code></li>
+            <li><strong>Windows:</strong> <code>certutil -addstore Root</code></li>
+            <li><strong>Firefox/Chrome:</strong> NSS <code>certutil</code> for browser-specific databases</li>
+        </ul>
+        <p>Security measures:</p>
+        <ul>
+            <li>Clean subprocess environment — no env var leakage</li>
+            <li>Explicit argument lists — no shell injection</li>
+            <li>Command timeouts — no hanging on interactive prompts</li>
         </ul>
 
         <h2 id="api-auth">No Authentication on the API</h2>
@@ -74,10 +127,12 @@
             </thead>
             <tbody>
                 <tr><td>Leaked dev cert</td><td>Expires in 24 hours (default)</td></tr>
-                <tr><td>Compromised CA key</td><td>Rotate: delete <code>~/.kalypso/</code>, run <code>kalypso init</code>, re-trust</td></tr>
+                <tr><td>Compromised CA key</td><td>Key stored with 0600 perms. Rotate: delete <code>~/.kalypso/</code>, run <code>kalypso init</code>, <code>kalypso trust</code></td></tr>
                 <tr><td>CA used to sign malicious certs</td><td>Only trust on dev machines, never in production</td></tr>
                 <tr><td>API exposed to internet</td><td>Don't do this. Bind to localhost or Docker network only.</td></tr>
                 <tr><td>Man-in-the-middle on API</td><td>API runs on local/Docker network. Use firewall rules if concerned.</td></tr>
+                <tr><td>Insecure key permissions</td><td><code>kalypso status</code> checks and warns. <code>kalypso init</code> uses 0600 by default.</td></tr>
+                <tr><td>Supply chain (malicious CA in repo)</td><td>Never commit CA keys. <code>.gitignore</code> blocks <code>*.pem</code> by default.</td></tr>
             </tbody>
         </table>
 
@@ -88,6 +143,8 @@
             <li><strong>Only trust the CA on dev machines</strong> — never add it to production trust stores</li>
             <li><strong>Use short cert lifetimes</strong> — the default 24 hours is recommended</li>
             <li><strong>Don't expose port 8200</strong> — keep it on localhost or Docker internal networks</li>
+            <li><strong>Run <code>kalypso status</code></strong> — verify key permissions after setup</li>
+            <li><strong>Never commit PEM files</strong> — the <code>.gitignore</code> blocks them by default</li>
         </ol>
 
         <div class="next-page">
