@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -34,12 +36,27 @@ class TestInitCommand:
             assert result.exit_code == 0
             assert "Root CA created" in result.output
 
+    def test_init_shows_fingerprint(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            result = runner.invoke(main, ["--data-dir", td, "init"])
+            assert "Fingerprint:" in result.output
+
     def test_init_shows_trust_instructions(self):
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as td:
             result = runner.invoke(main, ["--data-dir", td, "init"])
-            # Should show either mkcert auto-install or manual instructions
-            assert "mkcert" in result.output or "macOS" in result.output
+            assert "kalypso trust" in result.output
+            assert "macOS" in result.output
+
+    def test_init_creates_key_with_secure_permissions(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            runner.invoke(main, ["--data-dir", td, "init"])
+            key_path = Path(td) / "ca-key.pem"
+            mode = key_path.stat().st_mode
+            # Group and other should have no access
+            assert (mode & (stat.S_IRWXG | stat.S_IRWXO)) == 0
 
 
 class TestIssueCommand:
@@ -109,6 +126,34 @@ class TestIssueCommand:
             ])
             assert result.exit_code == 0
 
+    def test_issue_shows_fingerprint(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td) / "ca"
+            out_dir = Path(td) / "certs"
+            runner.invoke(main, ["--data-dir", str(data_dir), "init"])
+            result = runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "issue", "myapp.local",
+                "--out", str(out_dir),
+            ])
+            assert "Fingerprint:" in result.output
+
+    def test_issued_key_has_secure_permissions(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td) / "ca"
+            out_dir = Path(td) / "certs"
+            runner.invoke(main, ["--data-dir", str(data_dir), "init"])
+            runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "issue", "myapp.local",
+                "--out", str(out_dir),
+            ])
+            key_path = out_dir / "key.pem"
+            mode = key_path.stat().st_mode
+            assert (mode & (stat.S_IRWXG | stat.S_IRWXO)) == 0
+
 
 class TestCaCertCommand:
     def test_prints_ca_cert(self):
@@ -123,4 +168,29 @@ class TestCaCertCommand:
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as td:
             result = runner.invoke(main, ["--data-dir", td, "ca-cert"])
+            assert result.exit_code == 1
+
+
+class TestStatusCommand:
+    def test_shows_ca_info(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            runner.invoke(main, ["--data-dir", td, "init"])
+            result = runner.invoke(main, ["--data-dir", td, "status"])
+            assert result.exit_code == 0
+            assert "Fingerprint:" in result.output
+            assert "Subject:" in result.output
+            assert "Key Security:" in result.output
+
+    def test_shows_secure_key_status(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            runner.invoke(main, ["--data-dir", td, "init"])
+            result = runner.invoke(main, ["--data-dir", td, "status"])
+            assert "secure" in result.output
+
+    def test_fails_without_init(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            result = runner.invoke(main, ["--data-dir", td, "status"])
             assert result.exit_code == 1

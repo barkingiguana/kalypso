@@ -4,16 +4,6 @@ LABEL org.opencontainers.image.title="Kalypso"
 LABEL org.opencontainers.image.description="Local dev SSL certificate authority"
 LABEL org.opencontainers.image.source="https://github.com/kalypso-dev/kalypso"
 
-# Install mkcert for trust store management
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl libnss3-tools && \
-    ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://dl.filippo.io/mkcert/latest?for=linux/${ARCH}" -o /usr/local/bin/mkcert && \
-    chmod +x /usr/local/bin/mkcert && \
-    apt-get purge -y curl && \
-    apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 COPY pyproject.toml README.md ./

@@ -2,12 +2,25 @@
 
 Kalypso CA generates a root CA certificate that developers trust once,
 then uses it to sign short-lived leaf certificates for local services.
+
+Security:
+- ECDSA P-384 keys (stronger than P-256, still fast)
+- SHA-384 signatures (matched to P-384 curve strength)
+- Root CA constrained: pathLength=0, keyCertSign only
+- Leaf certs: short-lived (24h default, 7-day max), serverAuth only
+- Private keys written with 0o600 permissions (owner-only)
+- Unique serial number and key pair per certificate
+- SHA-256 fingerprints for audit trail
 """
 
 from __future__ import annotations
 
 import datetime
+import hashlib
 import ipaddress
+import logging
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
@@ -17,10 +30,44 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+logger = logging.getLogger("kalypso.ca")
+
 # Sensible defaults — short-lived certs reduce blast radius if leaked.
 DEFAULT_CA_DAYS = 3650  # 10 years for root CA
 DEFAULT_CERT_HOURS = 24  # 24 hours for leaf certs
 MAX_CERT_HOURS = 168  # 7 days max for leaf certs
+
+
+def fingerprint(cert: x509.Certificate) -> str:
+    """SHA-256 fingerprint of a certificate (hex, colon-separated)."""
+    digest = hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+
+
+def _secure_write(path: Path, data: bytes, mode: int = 0o600) -> None:
+    """Write data to a file with restrictive permissions.
+
+    Uses os.open + os.write to avoid any window where the file exists
+    with default (world-readable) permissions.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+
+def verify_key_permissions(key_path: Path) -> bool:
+    """Check that a private key file has safe permissions (owner-only).
+
+    Returns True if permissions are 0o600 or stricter, False otherwise.
+    """
+    try:
+        st = key_path.stat()
+        # Check that group and other have no access
+        return (st.st_mode & (stat.S_IRWXG | stat.S_IRWXO)) == 0
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -42,9 +89,20 @@ class CertBundle:
             serialization.NoEncryption(),
         )
 
+    @property
+    def cert_fingerprint(self) -> str:
+        """SHA-256 fingerprint of the certificate."""
+        return fingerprint(self.certificate)
+
     def save(self, cert_path: Path, key_path: Path) -> None:
+        """Save cert and key to disk with secure file permissions.
+
+        The private key file is created with 0o600 (owner read/write only).
+        The certificate file is created with 0o644 (world-readable, it's public).
+        """
         cert_path.write_bytes(self.cert_pem)
-        key_path.write_bytes(self.key_pem)
+        _secure_write(key_path, self.key_pem, mode=0o600)
+        logger.info("Saved cert=%s key=%s fingerprint=%s", cert_path, key_path, self.cert_fingerprint)
 
 
 @dataclass
@@ -70,7 +128,7 @@ class CertificateAuthority:
         organization: str = "Kalypso Dev CA",
         days: int = DEFAULT_CA_DAYS,
     ) -> Self:
-        """Create a brand-new root CA."""
+        """Create a brand-new root CA with ECDSA P-384."""
         key = _generate_key()
         name = x509.Name([
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
@@ -107,17 +165,31 @@ class CertificateAuthority:
                 x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
                 critical=False,
             )
-            .sign(key, hashes.SHA256())
+            .sign(key, hashes.SHA384())
         )
+        logger.info("Initialized new CA: org=%s fingerprint=%s", organization, fingerprint(cert))
         return cls(root=CertBundle(certificate=cert, private_key=key), organization=organization)
 
     @classmethod
     def load(cls, cert_path: Path, key_path: Path, organization: str = "Kalypso Dev CA") -> Self:
-        """Load an existing CA from PEM files."""
+        """Load an existing CA from PEM files.
+
+        Warns if the key file has overly permissive permissions.
+        """
+        # Warn about insecure key permissions
+        if key_path.exists() and not verify_key_permissions(key_path):
+            logger.warning(
+                "CA key file %s has insecure permissions. "
+                "Run: chmod 600 %s",
+                key_path,
+                key_path,
+            )
+
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
         key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
         if not isinstance(key, ec.EllipticCurvePrivateKey):
             raise TypeError("CA key must be an EC private key")
+        logger.info("Loaded CA from %s fingerprint=%s", cert_path, fingerprint(cert))
         return cls(root=CertBundle(certificate=cert, private_key=key), organization=organization)
 
     # -- Certificate issuance ---------------------------------------------
@@ -197,10 +269,16 @@ class CertificateAuthority:
                 ),
                 critical=False,
             )
-            .sign(self.root.private_key, hashes.SHA256())
+            .sign(self.root.private_key, hashes.SHA384())
         )
         bundle = CertBundle(certificate=cert, private_key=key)
         self._issued.append(cert)
+        logger.info(
+            "Issued cert: domains=%s hours=%d fingerprint=%s",
+            domains,
+            hours,
+            bundle.cert_fingerprint,
+        )
         return bundle
 
     @property
@@ -209,5 +287,9 @@ class CertificateAuthority:
 
 
 def _generate_key() -> ec.EllipticCurvePrivateKey:
-    """Generate a new ECDSA P-256 key (fast, secure, small)."""
-    return ec.generate_private_key(ec.SECP256R1())
+    """Generate a new ECDSA P-384 key.
+
+    P-384 provides ~192-bit security (vs P-256's ~128-bit). Still fast
+    for local dev use, but meaningfully stronger than what mkcert uses.
+    """
+    return ec.generate_private_key(ec.SECP384R1())

@@ -2,6 +2,8 @@
 
 **Local dev SSL certificate authority — like Let's Encrypt for localhost.**
 
+Zero dependencies. No third-party tools. Just `pip install kalypso`.
+
 Kalypso makes HTTPS in local development effortless. Create one root CA,
 trust it once, then let Kalypso vend short-lived SSL certificates to every
 service in your stack.
@@ -15,11 +17,8 @@ pip install kalypso
 # Create your root CA (do this once)
 kalypso init
 
-# Trust it — auto via mkcert, or manually:
-kalypso trust          # uses mkcert if installed (brew install mkcert)
-# Or manually:
-# macOS:  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.kalypso/ca-cert.pem
-# Ubuntu: sudo cp ~/.kalypso/ca-cert.pem /usr/local/share/ca-certificates/kalypso.crt && sudo update-ca-certificates
+# Trust it (auto-detects your OS — macOS, Linux, or Windows)
+sudo kalypso trust
 
 # Issue a certificate (valid for 24 hours by default)
 kalypso issue myapp.local "*.myapp.local"
@@ -36,13 +35,17 @@ kalypso serve
 | REST API for containers | Yes | No | No |
 | Docker Compose sidecar | Yes | No | No |
 | Auto-renewal | Yes | No | No |
-| Zero config | Yes | No | Yes |
+| Native trust store install | Yes (no deps) | No | Yes |
 | SDKs (Python, Ruby, Go, curl) | Yes | No | No |
+| ECDSA P-384 | Yes | No | No |
+| File permission hardening | Yes | No | No |
+| Certificate fingerprints | Yes | No | No |
+| Zero external dependencies | Yes | N/A | No (Go binary) |
 
 ## How It Works
 
-1. **`kalypso init`** — generates an ECDSA P-256 root CA certificate
-2. **`kalypso trust`** — uses [mkcert](https://github.com/FiloSottile/mkcert) to install into system/browser trust stores (or shows manual instructions)
+1. **`kalypso init`** — generates an ECDSA P-384 root CA (key saved with 0600 perms)
+2. **`kalypso trust`** — natively installs into OS trust stores (no third-party tools)
 3. **Issue certs** — via CLI, API, or SDK. Certs are short-lived (24h default, 7 day max)
 4. **Auto-refresh** — the Docker sidecar renews certs before they expire
 
@@ -121,12 +124,16 @@ Issue a new certificate.
 
 ## Security
 
-- ECDSA P-256 keys (fast, secure, small)
+- **ECDSA P-384 keys** — 192-bit security (stronger than mkcert's P-256)
+- **SHA-384 signatures** — matched to curve strength
 - Root CA is constrained (`pathLength=0`, `keyUsage=keyCertSign`)
 - Leaf certs are short-lived (24h default, 7 day max)
 - Leaf certs have `extKeyUsage=serverAuth` only
 - Each cert gets a unique serial number and key pair
-- No wildcard root — you choose exactly which domains to cover
+- **Private keys written with 0600 permissions** (owner-only)
+- **SHA-256 certificate fingerprints** for audit trail
+- Native trust store management — no third-party binaries
+- `kalypso status` — verify key security and CA fingerprint
 
 ## License
 

@@ -46,32 +46,22 @@ def init(ctx: click.Context, org: str) -> None:
     ca.root.save(cert_path, key_path)
 
     click.echo(f"Root CA created at {data_dir}")
-    click.echo(f"  Certificate: {cert_path}")
-    click.echo(f"  Private key: {key_path}")
+    click.echo(f"  Certificate:  {cert_path}")
+    click.echo(f"  Private key:  {key_path} (mode 0600)")
+    click.echo(f"  Fingerprint:  {ca.root.cert_fingerprint}")
     click.echo()
-
-    # Try to auto-install into trust stores via mkcert
-    from kalypso.mkcert import find_mkcert, install_ca_to_trust_store
-
-    mkcert = find_mkcert()
-    if mkcert.available:
-        click.echo(f"Found mkcert ({mkcert.version}), installing CA into trust stores...")
-        if install_ca_to_trust_store(cert_path):
-            click.echo("CA installed into system trust store.")
-        else:
-            click.echo("Could not auto-install. Install manually (see below).", err=True)
-            _print_manual_trust_instructions(cert_path)
-    else:
-        click.echo("Tip: install mkcert for automatic trust store setup (brew install mkcert)")
-        click.echo()
-        _print_manual_trust_instructions(cert_path)
+    click.echo("Next: trust the CA in your system/browser:")
+    click.echo("  kalypso trust")
+    click.echo()
+    click.echo("Or manually:")
+    _print_trust_instructions(cert_path)
 
 
-def _print_manual_trust_instructions(cert_path: Path) -> None:
-    click.echo("Trust the CA certificate in your system/browser:")
-    click.echo(f"  macOS:   sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {cert_path}")
-    click.echo(f"  Ubuntu:  sudo cp {cert_path} /usr/local/share/ca-certificates/kalypso.crt && sudo update-ca-certificates")
-    click.echo(f"  Fedora:  sudo trust anchor {cert_path}")
+def _print_trust_instructions(cert_path: Path) -> None:
+    from kalypso.trust import trust_instructions
+
+    for line in trust_instructions(cert_path):
+        click.echo(f"  {line}")
 
 
 @main.command()
@@ -100,6 +90,7 @@ def issue(ctx: click.Context, domains: tuple[str, ...], hours: int, ip: tuple[st
     click.echo(f"  Valid for: {hours} hours")
     click.echo(f"  Certificate: {out / 'cert.pem'}")
     click.echo(f"  Private key: {out / 'key.pem'}")
+    click.echo(f"  Fingerprint: {bundle.cert_fingerprint}")
 
 
 @main.command()
@@ -112,7 +103,6 @@ def serve(ctx: click.Context) -> None:
     cert_path = data_dir / "ca-cert.pem"
     key_path = data_dir / "ca-key.pem"
 
-    # Pre-load the CA if it exists
     if cert_path.exists():
         from kalypso.server import CA_CERT_PATH as _  # noqa: F401
         import kalypso.server as srv
@@ -127,7 +117,12 @@ def serve(ctx: click.Context) -> None:
 @main.command()
 @click.pass_context
 def trust(ctx: click.Context) -> None:
-    """Install the CA certificate into system trust stores (requires mkcert)."""
+    """Install the CA certificate into system trust stores.
+
+    Automatically detects your OS and installs into the right places:
+    macOS System Keychain, Linux system trust store, Firefox NSS,
+    or Windows Certificate Store. No extra tools needed.
+    """
     data_dir: Path = ctx.obj["data_dir"]
     cert_path = data_dir / "ca-cert.pem"
 
@@ -135,24 +130,49 @@ def trust(ctx: click.Context) -> None:
         click.echo("No CA found. Run `kalypso init` first.", err=True)
         sys.exit(1)
 
-    from kalypso.mkcert import find_mkcert, install_ca_to_trust_store
+    from kalypso.trust import install
 
-    mkcert = find_mkcert()
-    if not mkcert.available:
-        click.echo("mkcert is not installed. Install it first:", err=True)
-        click.echo("  macOS:   brew install mkcert")
-        click.echo("  Ubuntu:  sudo apt install mkcert")
-        click.echo("  Other:   https://github.com/FiloSottile/mkcert#installation")
+    click.echo("Installing CA into system trust stores...")
+    result = install(cert_path)
+
+    if result.success:
+        for store in result.stores_modified:
+            click.echo(f"  Installed: {store}")
+        click.echo("Done. Your browser and tools now trust Kalypso certificates.")
+    else:
+        click.echo("Could not auto-install (may need sudo).", err=True)
+        for err in result.errors:
+            click.echo(f"  Error: {err}", err=True)
         click.echo()
-        _print_manual_trust_instructions(cert_path)
+        click.echo("Install manually:")
+        _print_trust_instructions(cert_path)
         sys.exit(1)
 
-    click.echo(f"Using mkcert ({mkcert.version}) to install CA into trust stores...")
-    if install_ca_to_trust_store(cert_path):
-        click.echo("CA installed into system trust store.")
+
+@main.command()
+@click.pass_context
+def untrust(ctx: click.Context) -> None:
+    """Remove the CA certificate from system trust stores."""
+    data_dir: Path = ctx.obj["data_dir"]
+    cert_path = data_dir / "ca-cert.pem"
+
+    if not cert_path.exists():
+        click.echo("No CA found.", err=True)
+        sys.exit(1)
+
+    from kalypso.trust import uninstall
+
+    click.echo("Removing CA from system trust stores...")
+    result = uninstall(cert_path)
+
+    if result.success:
+        for store in result.stores_modified:
+            click.echo(f"  Removed: {store}")
+        click.echo("Done.")
     else:
-        click.echo("Failed to install CA. Try manually:", err=True)
-        _print_manual_trust_instructions(cert_path)
+        click.echo("Could not auto-remove.", err=True)
+        for err in result.errors:
+            click.echo(f"  Error: {err}", err=True)
         sys.exit(1)
 
 
@@ -168,3 +188,34 @@ def ca_cert(ctx: click.Context) -> None:
         sys.exit(1)
 
     sys.stdout.buffer.write(cert_path.read_bytes())
+
+
+@main.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show CA status, fingerprint, and key security info."""
+    data_dir: Path = ctx.obj["data_dir"]
+    cert_path = data_dir / "ca-cert.pem"
+    key_path = data_dir / "ca-key.pem"
+
+    if not cert_path.exists():
+        click.echo("No CA found. Run `kalypso init` first.", err=True)
+        sys.exit(1)
+
+    from kalypso.ca import fingerprint, verify_key_permissions
+    from cryptography import x509
+
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    click.echo(f"CA Directory:   {data_dir}")
+    click.echo(f"Subject:        {cert.subject.rfc4514_string()}")
+    click.echo(f"Fingerprint:    {fingerprint(cert)}")
+    click.echo(f"Not Before:     {cert.not_valid_before_utc}")
+    click.echo(f"Not After:      {cert.not_valid_after_utc}")
+
+    if key_path.exists():
+        perms_ok = verify_key_permissions(key_path)
+        mode = oct(key_path.stat().st_mode & 0o777)
+        if perms_ok:
+            click.echo(f"Key Security:   {mode} (secure)")
+        else:
+            click.echo(f"Key Security:   {mode} (INSECURE — run: chmod 600 {key_path})", err=True)
