@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>curl Examples — Kalypso Docs</title>
+    <meta name="description" content="Issue SSL certificates with curl. No SDK needed.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+    <a href="../" class="logo">kalypso</a>
+    <div class="nav-links">
+        <a href="getting-started.html">Getting Started</a>
+        <a href="api.html">API</a>
+        <a href="curl.html" class="active">curl</a>
+        <a href="security.html">Security</a>
+        <a href="docker.html">Docker</a>
+        <a href="https://github.com/kalypso-dev/kalypso">GitHub</a>
+    </div>
+</nav>
+
+<div class="layout">
+    <aside class="sidebar">
+        <h4>Documentation</h4>
+        <ul>
+            <li><a href="getting-started.html">Getting Started</a></li>
+            <li><a href="api.html">API Reference</a></li>
+            <li><a href="curl.html" class="active">curl Examples</a></li>
+            <li><a href="security.html">Security Model</a></li>
+            <li><a href="docker.html">Docker &amp; Compose</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>curl Examples</h1>
+        <p>No SDK needed — Kalypso's API is plain HTTP/JSON.</p>
+
+        <h2 id="health">Check Server Health</h2>
+        <pre><code>curl http://localhost:8200/health</code></pre>
+        <pre><code>{<span class="str">"status"</span>: <span class="str">"ok"</span>, <span class="str">"ca_initialized"</span>: <span class="kw">true</span>, <span class="str">"issued_count"</span>: 5}</code></pre>
+
+        <h2 id="ca">Download the CA Certificate</h2>
+        <pre><code>curl -s http://localhost:8200/ca.pem | jq -r .certificate > kalypso-ca.pem</code></pre>
+
+        <h2 id="basic">Issue a Certificate — Single Domain</h2>
+        <pre><code>curl -X POST http://localhost:8200/certificates \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local"]}'</span></code></pre>
+
+        <h2 id="multi">Multiple Domains + Wildcard</h2>
+        <pre><code>curl -X POST http://localhost:8200/certificates \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local", "*.myapp.local", "api.myapp.local"]}'</span></code></pre>
+
+        <h2 id="short">Short-Lived Cert (4 hours)</h2>
+        <pre><code>curl -X POST http://localhost:8200/certificates \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local"], "hours": 4}'</span></code></pre>
+
+        <h2 id="ip">With IP Addresses</h2>
+        <pre><code>curl -X POST http://localhost:8200/certificates \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local"], "ip_addresses": ["127.0.0.1", "::1"]}'</span></code></pre>
+
+        <h2 id="save">Save Cert and Key to Files</h2>
+        <pre><code>RESPONSE=$(curl -sf -X POST http://localhost:8200/certificates \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local"]}'</span>)
+
+echo "$RESPONSE" | jq -r .certificate > cert.pem
+echo "$RESPONSE" | jq -r .private_key > key.pem
+echo "$RESPONSE" | jq -r .ca_certificate > ca.pem</code></pre>
+
+        <h2 id="refresh">Auto-Refresh with a Cron Job</h2>
+        <pre><code><span class="cmt"># Add to crontab: refresh cert every 12 hours</span>
+0 */12 * * * /path/to/refresh-cert.sh</code></pre>
+
+        <p><code>refresh-cert.sh</code>:</p>
+        <pre><code><span class="cmt">#!/bin/bash</span>
+set -e
+RESPONSE=$(curl -sf -X POST http://localhost:8200/certificates \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local"], "hours": 24}'</span>)
+
+echo "$RESPONSE" | jq -r .certificate > /etc/certs/cert.pem
+echo "$RESPONSE" | jq -r .private_key > /etc/certs/key.pem
+echo "$(date): Certificate refreshed" >> /var/log/kalypso-refresh.log</code></pre>
+
+        <div class="next-page">
+            <a href="security.html">Next: Security Model &rarr;</a>
+        </div>
+    </main>
+</div>
+
+</body>
+</html>

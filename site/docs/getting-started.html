@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Getting Started — Kalypso Docs</title>
+    <meta name="description" content="Get up and running with Kalypso in 60 seconds. Install, create a CA, trust it, issue certs.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+    <a href="../" class="logo">kalypso</a>
+    <div class="nav-links">
+        <a href="getting-started.html" class="active">Getting Started</a>
+        <a href="api.html">API</a>
+        <a href="curl.html">curl</a>
+        <a href="security.html">Security</a>
+        <a href="docker.html">Docker</a>
+        <a href="https://github.com/kalypso-dev/kalypso">GitHub</a>
+    </div>
+</nav>
+
+<div class="layout">
+    <aside class="sidebar">
+        <h4>Documentation</h4>
+        <ul>
+            <li><a href="getting-started.html" class="active">Getting Started</a></li>
+            <li><a href="api.html">API Reference</a></li>
+            <li><a href="curl.html">curl Examples</a></li>
+            <li><a href="security.html">Security Model</a></li>
+            <li><a href="docker.html">Docker &amp; Compose</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>Getting Started with Kalypso</h1>
+
+        <h2 id="installation">Installation</h2>
+        <pre><code>pip install kalypso</code></pre>
+        <p>Or with Docker:</p>
+        <pre><code>docker pull kalypso/kalypso:latest</code></pre>
+
+        <h2 id="step-1">Step 1: Create Your Root CA</h2>
+        <pre><code>kalypso init</code></pre>
+        <p>This creates your root CA at <code>~/.kalypso/</code>:</p>
+        <ul>
+            <li><code>ca-cert.pem</code> — the root certificate (share this, it's public)</li>
+            <li><code>ca-key.pem</code> — the root private key (<strong>keep this secret</strong>)</li>
+        </ul>
+
+        <h2 id="step-2">Step 2: Trust the Root CA</h2>
+        <p>You only need to do this once per machine.</p>
+
+        <p><strong>Automatic (recommended):</strong></p>
+        <pre><code><span class="cmt"># If mkcert is installed, Kalypso uses it automatically</span>
+kalypso trust</code></pre>
+
+        <p><strong>Manual — macOS:</strong></p>
+        <pre><code>sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/.kalypso/ca-cert.pem</code></pre>
+
+        <p><strong>Manual — Ubuntu / Debian:</strong></p>
+        <pre><code>sudo cp ~/.kalypso/ca-cert.pem /usr/local/share/ca-certificates/kalypso.crt
+sudo update-ca-certificates</code></pre>
+
+        <p><strong>Manual — Fedora / RHEL:</strong></p>
+        <pre><code>sudo trust anchor ~/.kalypso/ca-cert.pem</code></pre>
+
+        <p><strong>Firefox (all platforms):</strong></p>
+        <ol>
+            <li>Open <code>about:preferences#privacy</code></li>
+            <li>Click <strong>View Certificates</strong></li>
+            <li>Click <strong>Import</strong> and select <code>~/.kalypso/ca-cert.pem</code></li>
+            <li>Check <strong>Trust this CA to identify websites</strong></li>
+        </ol>
+
+        <p><strong>Node.js:</strong></p>
+        <pre><code>export NODE_EXTRA_CA_CERTS=~/.kalypso/ca-cert.pem</code></pre>
+
+        <h2 id="step-3">Step 3: Issue Certificates</h2>
+
+        <h3>Via CLI</h3>
+        <pre><code><span class="cmt"># Single domain, valid for 24 hours</span>
+kalypso issue myapp.local
+
+<span class="cmt"># Multiple domains with wildcard</span>
+kalypso issue myapp.local "*.myapp.local" api.myapp.local
+
+<span class="cmt"># Custom lifetime (4 hours)</span>
+kalypso issue myapp.local --hours 4
+
+<span class="cmt"># With IP address</span>
+kalypso issue myapp.local --ip 127.0.0.1 --ip ::1
+
+<span class="cmt"># Custom output directory</span>
+kalypso issue myapp.local --out /path/to/certs</code></pre>
+
+        <h3>Via API</h3>
+        <pre><code><span class="cmt"># Start the server</span>
+kalypso serve
+
+<span class="cmt"># Request a certificate</span>
+curl -X POST http://localhost:8200/certificates \
+  -H 'Content-Type: application/json' \
+  -d '{"domains": ["myapp.local"]}'</code></pre>
+
+        <h3>Via SDK</h3>
+        <pre><code><span class="kw">from</span> kalypso_sdk <span class="kw">import</span> KalypsoClient
+
+client = KalypsoClient(<span class="str">"http://localhost:8200"</span>)
+cert = client.issue(<span class="str">"myapp.local"</span>, <span class="str">"*.myapp.local"</span>)
+cert.save(<span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>)</code></pre>
+
+        <h2 id="step-4">Step 4: Use in Your App</h2>
+
+        <h3>Python (Flask)</h3>
+        <pre><code>app.run(ssl_context=(<span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>))</code></pre>
+
+        <h3>Node.js</h3>
+        <pre><code><span class="kw">const</span> https = require(<span class="str">'https'</span>);
+<span class="kw">const</span> fs = require(<span class="str">'fs'</span>);
+
+https.createServer({
+  cert: fs.readFileSync(<span class="str">'cert.pem'</span>),
+  key: fs.readFileSync(<span class="str">'key.pem'</span>),
+}, app).listen(443);</code></pre>
+
+        <h3>nginx</h3>
+        <pre><code>server {
+    listen 443 ssl;
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+}</code></pre>
+
+        <h2 id="docker">Docker Compose</h2>
+        <p>See the <a href="docker.html">Docker &amp; Compose guide</a> for complete setups including auto-refresh.</p>
+
+        <div class="next-page">
+            <a href="api.html">Next: API Reference &rarr;</a>
+        </div>
+    </main>
+</div>
+
+</body>
+</html>
