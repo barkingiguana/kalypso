@@ -176,6 +176,24 @@ def untrust(ctx: click.Context) -> None:
         sys.exit(1)
 
 
+@main.command()
+def sidecar() -> None:
+    """Run as a Docker Compose sidecar — auto-issue and renew certs.
+
+    Configure via environment variables:
+
+    \b
+      KALYPSO_DOMAINS     Comma-separated domains (required)
+      KALYPSO_SERVER      Kalypso server URL (default: http://kalypso:8200)
+      KALYPSO_CERT_DIR    Output dir for certs (default: /certs)
+      KALYPSO_HOURS       Cert lifetime in hours (default: 24)
+      KALYPSO_RELOAD_CMD  Command to run after renewal (optional)
+    """
+    from kalypso.sidecar import run
+
+    run()
+
+
 @main.command(name="ca-cert")
 @click.pass_context
 def ca_cert(ctx: click.Context) -> None:

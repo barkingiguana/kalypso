@@ -34,6 +34,7 @@
         <ul>
             <li><a href="#health">GET /health</a></li>
             <li><a href="#ca-pem">GET /ca.pem</a></li>
+            <li><a href="#ca-json">GET /ca.json</a></li>
             <li><a href="#certificates">POST /certificates</a></li>
             <li><a href="#openapi">OpenAPI / Swagger</a></li>
         </ul>
@@ -54,10 +55,24 @@
 }</code></pre>
 
         <h2 id="ca-pem"><code>GET /ca.pem</code></h2>
-        <p>Download the root CA certificate. Trust this certificate once in your OS/browser to make all Kalypso-issued certs trusted.</p>
+        <p>Download the root CA certificate as <strong>raw PEM</strong>. Save directly to a file — no JSON parsing needed.</p>
+        <h3>Response</h3>
+        <p>Content-Type: <code>application/x-pem-file</code></p>
+        <pre><code>-----BEGIN CERTIFICATE-----
+MIICxjCCAk2gAwIBAgIU...
+-----END CERTIFICATE-----</code></pre>
+        <h3>Usage</h3>
+        <pre><code>curl http://localhost:8200/ca.pem > kalypso-ca.pem</code></pre>
+
+        <h2 id="ca-json"><code>GET /ca.json</code></h2>
+        <p>CA certificate with metadata as JSON.</p>
         <h3>Response</h3>
         <pre><code>{
-  <span class="str">"certificate"</span>: <span class="str">"-----BEGIN CERTIFICATE-----\n..."</span>
+  <span class="str">"certificate"</span>: <span class="str">"-----BEGIN CERTIFICATE-----\n..."</span>,
+  <span class="str">"fingerprint"</span>: <span class="str">"ab:cd:ef:..."</span>,
+  <span class="str">"not_before"</span>: <span class="str">"2025-01-01T00:00:00"</span>,
+  <span class="str">"not_after"</span>: <span class="str">"2035-01-01T00:00:00"</span>,
+  <span class="str">"subject"</span>: <span class="str">"CN=Kalypso Dev CA Root CA,O=Kalypso Dev CA"</span>
 }</code></pre>
 
         <h2 id="certificates"><code>POST /certificates</code></h2>

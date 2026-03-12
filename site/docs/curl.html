@@ -41,7 +41,11 @@
         <pre><code>{<span class="str">"status"</span>: <span class="str">"ok"</span>, <span class="str">"ca_initialized"</span>: <span class="kw">true</span>, <span class="str">"issued_count"</span>: 5}</code></pre>
 
         <h2 id="ca">Download the CA Certificate</h2>
-        <pre><code>curl -s http://localhost:8200/ca.pem | jq -r .certificate > kalypso-ca.pem</code></pre>
+        <pre><code><span class="cmt"># Raw PEM — save directly, no jq needed</span>
+curl http://localhost:8200/ca.pem > kalypso-ca.pem
+
+<span class="cmt"># JSON with metadata (fingerprint, expiry, subject)</span>
+curl http://localhost:8200/ca.json</code></pre>
 
         <h2 id="basic">Issue a Certificate — Single Domain</h2>
         <pre><code>curl -X POST http://localhost:8200/certificates \

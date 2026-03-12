@@ -40,10 +40,21 @@ class TestHealth:
 
 
 class TestCACertificate:
-    def test_get_ca_cert(self, client: TestClient):
+    def test_get_ca_pem_returns_raw_pem(self, client: TestClient):
         r = client.get("/ca.pem")
         assert r.status_code == 200
-        assert "BEGIN CERTIFICATE" in r.json()["certificate"]
+        assert "application/x-pem-file" in r.headers["content-type"]
+        assert r.text.startswith("-----BEGIN CERTIFICATE-----")
+
+    def test_get_ca_json(self, client: TestClient):
+        r = client.get("/ca.json")
+        assert r.status_code == 200
+        data = r.json()
+        assert "BEGIN CERTIFICATE" in data["certificate"]
+        assert "fingerprint" in data
+        assert "not_before" in data
+        assert "not_after" in data
+        assert "subject" in data
 
 
 class TestIssueCertificate:
@@ -95,4 +106,4 @@ class TestIssueCertificate:
         r = client.post("/certificates", json={"domains": ["myapp.local"]})
         data = r.json()
         ca_r = client.get("/ca.pem")
-        assert data["ca_certificate"] == ca_r.json()["certificate"]
+        assert data["ca_certificate"] == ca_r.text

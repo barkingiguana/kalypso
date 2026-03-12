@@ -11,9 +11,10 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from kalypso.ca import DEFAULT_CERT_HOURS, MAX_CERT_HOURS, CertificateAuthority
+from kalypso.ca import DEFAULT_CERT_HOURS, MAX_CERT_HOURS, CertificateAuthority, fingerprint
 
 logger = logging.getLogger("kalypso")
 
@@ -99,11 +100,31 @@ def health() -> HealthResponse:
     )
 
 
-@app.get("/ca.pem")
-def ca_certificate() -> dict:
-    """Download the CA root certificate (trust this once)."""
+@app.get("/ca.pem", response_class=PlainTextResponse)
+def ca_certificate_pem() -> PlainTextResponse:
+    """Download the CA root certificate as raw PEM (trust this once).
+
+    Usage: curl http://localhost:8200/ca.pem > kalypso-ca.pem
+    """
     ca = get_ca()
-    return {"certificate": ca.root.cert_pem.decode()}
+    return PlainTextResponse(
+        content=ca.root.cert_pem.decode(),
+        media_type="application/x-pem-file",
+    )
+
+
+@app.get("/ca.json")
+def ca_certificate_json() -> dict:
+    """CA certificate with metadata as JSON."""
+    ca = get_ca()
+    cert = ca.root.certificate
+    return {
+        "certificate": ca.root.cert_pem.decode(),
+        "fingerprint": fingerprint(cert),
+        "not_before": cert.not_valid_before_utc.isoformat(),
+        "not_after": cert.not_valid_after_utc.isoformat(),
+        "subject": cert.subject.rfc4514_string(),
+    }
 
 
 @app.post("/certificates", response_model=IssueResponse)
