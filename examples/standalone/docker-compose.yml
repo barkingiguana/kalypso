@@ -1,0 +1,22 @@
+# Standalone Kalypso server — run the CA as a Docker service.
+#
+# Usage:
+#   docker compose up -d
+#   curl http://localhost:8200/health
+#   curl http://localhost:8200/ca.pem           # download CA cert
+#   curl -X POST http://localhost:8200/certificates \
+#     -H 'Content-Type: application/json' \
+#     -d '{"domains": ["myapp.local"]}'
+
+services:
+  kalypso:
+    build: ../..
+    # Or use the published image:
+    # image: kalypso/kalypso:latest
+    ports:
+      - "8200:8200"
+    volumes:
+      - kalypso-data:/data
+
+volumes:
+  kalypso-data:

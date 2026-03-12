@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalypso — HTTPS for Local Dev</title>
+    <meta name="description" content="Local dev SSL certificate authority. Like Let's Encrypt for localhost. Short-lived certs, Docker Compose sidecar, SDKs in Python, Ruby, Go.">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #1e1e2e;
+            --text: #e4e4ef;
+            --text-muted: #8888a0;
+            --accent: #6c5ce7;
+            --accent-glow: #a29bfe;
+            --green: #00e676;
+            --green-dim: #00c853;
+            --code-bg: #0d0d14;
+            --gradient-start: #6c5ce7;
+            --gradient-end: #00e676;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* --- Nav --- */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            padding: 1rem 2rem;
+            background: rgba(10, 10, 15, 0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .logo {
+            font-size: 1.3rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            margin-left: 2rem;
+            font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+        nav a:hover { color: var(--text); }
+
+        /* --- Hero --- */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 6rem 2rem 4rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 800px;
+            height: 800px;
+            background: radial-gradient(circle, rgba(108, 92, 231, 0.15) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.4rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            font-size: 0.85rem;
+            color: var(--green);
+            margin-bottom: 2rem;
+            background: rgba(0, 230, 118, 0.05);
+        }
+        h1 {
+            font-size: clamp(2.5rem, 6vw, 4.5rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1.1;
+            max-width: 800px;
+            margin-bottom: 1.5rem;
+        }
+        h1 .gradient {
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin-bottom: 3rem;
+        }
+        .cta-group {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.85rem 2rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--gradient-start), var(--accent-glow));
+            color: white;
+        }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(108, 92, 231, 0.4); }
+        .btn-secondary {
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover { border-color: var(--accent); }
+
+        /* --- Install bar --- */
+        .install {
+            margin-top: 3rem;
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem 2rem;
+            font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+            font-size: 0.95rem;
+            color: var(--green);
+            user-select: all;
+        }
+        .install .dim { color: var(--text-muted); }
+
+        /* --- Sections --- */
+        section {
+            padding: 6rem 2rem;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        section h2 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin-bottom: 1rem;
+        }
+        section .section-sub {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin-bottom: 3rem;
+        }
+
+        /* --- Feature grid --- */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+        .feature {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            transition: border-color 0.2s;
+        }
+        .feature:hover { border-color: var(--accent); }
+        .feature-icon {
+            font-size: 1.8rem;
+            margin-bottom: 1rem;
+        }
+        .feature h3 {
+            font-size: 1.15rem;
+            margin-bottom: 0.5rem;
+        }
+        .feature p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        /* --- Code blocks --- */
+        .code-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            align-items: start;
+        }
+        @media (max-width: 768px) {
+            .code-section { grid-template-columns: 1fr; }
+        }
+        .code-block {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .code-header {
+            padding: 0.75rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .code-header .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .dot-red { background: #ff5f56; }
+        .dot-yellow { background: #ffbd2e; }
+        .dot-green { background: #27c93f; }
+        pre {
+            padding: 1.25rem;
+            overflow-x: auto;
+            font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+            font-size: 0.85rem;
+            line-height: 1.7;
+        }
+        .kw { color: var(--accent-glow); }
+        .str { color: var(--green); }
+        .cmt { color: var(--text-muted); }
+        .fn { color: #ffd166; }
+
+        /* --- Comparison table --- */
+        .comparison {
+            overflow-x: auto;
+            margin-top: 2rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95rem;
+        }
+        th, td {
+            padding: 1rem 1.25rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        td:first-child { font-weight: 600; }
+        .check { color: var(--green); }
+        .cross { color: #ff5f56; }
+
+        /* --- Footer --- */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 3rem 2rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+        footer a { color: var(--accent-glow); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<nav>
+    <span class="logo">kalypso</span>
+    <div>
+        <a href="#features">Features</a>
+        <a href="#quickstart">Quick Start</a>
+        <a href="#sdks">SDKs</a>
+        <a href="#compare">Compare</a>
+        <a href="https://github.com/kalypso-dev/kalypso">GitHub</a>
+    </div>
+</nav>
+
+<div class="hero">
+    <span class="badge">Open Source &middot; MIT Licensed</span>
+    <h1>HTTPS for <span class="gradient">local dev</span>, without the pain</h1>
+    <p class="subtitle">
+        One trusted root CA. Short-lived certificates. A REST API your containers
+        can call. Like Let's Encrypt, but for localhost.
+    </p>
+    <div class="cta-group">
+        <a href="#quickstart" class="btn btn-primary">Get Started</a>
+        <a href="https://github.com/kalypso-dev/kalypso" class="btn btn-secondary">View on GitHub</a>
+    </div>
+    <div class="install">
+        <span class="dim">$</span> pip install kalypso
+    </div>
+</div>
+
+<section id="features">
+    <h2>Built for developers</h2>
+    <p class="section-sub">
+        Everything you need to run HTTPS locally, nothing you don't.
+    </p>
+    <div class="features">
+        <div class="feature">
+            <div class="feature-icon">&#128274;</div>
+            <h3>Short-Lived Certs</h3>
+            <p>24-hour default, 7-day max. If a dev cert leaks, it expires before anyone can use it.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon">&#128230;</div>
+            <h3>Docker Compose Sidecar</h3>
+            <p>Add one service to your compose file. Every container gets trusted HTTPS.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon">&#128260;</div>
+            <h3>Auto-Renewal</h3>
+            <p>The refresh sidecar renews certs at 50% lifetime. Certs never expire during dev sessions.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon">&#9889;</div>
+            <h3>REST API</h3>
+            <p>Simple JSON API. No client library needed — curl is enough.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon">&#128187;</div>
+            <h3>CLI Tool</h3>
+            <p><code>kalypso init</code>, <code>kalypso issue</code>. Two commands, done.</p>
+        </div>
+        <div class="feature">
+            <div class="feature-icon">&#128640;</div>
+            <h3>SDKs</h3>
+            <p>Python, Ruby, Go, and curl examples. Zero-dependency clients.</p>
+        </div>
+    </div>
+</section>
+
+<section id="quickstart">
+    <h2>Up and running in 60 seconds</h2>
+    <p class="section-sub">Trust once, issue forever.</p>
+    <div class="code-section">
+        <div>
+            <div class="code-block">
+                <div class="code-header">
+                    <span class="dot dot-red"></span>
+                    <span class="dot dot-yellow"></span>
+                    <span class="dot dot-green"></span>
+                    Terminal
+                </div>
+                <pre><span class="cmt"># Install</span>
+pip install kalypso
+
+<span class="cmt"># Create your root CA (once)</span>
+kalypso init
+
+<span class="cmt"># Trust it (macOS)</span>
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain \
+  ~/.kalypso/ca-cert.pem
+
+<span class="cmt"># Issue a cert — valid 24 hours</span>
+kalypso issue myapp.local
+
+<span class="cmt"># Done. Use cert.pem and key.pem</span></pre>
+            </div>
+        </div>
+        <div>
+            <div class="code-block">
+                <div class="code-header">
+                    <span class="dot dot-red"></span>
+                    <span class="dot dot-yellow"></span>
+                    <span class="dot dot-green"></span>
+                    docker-compose.yml
+                </div>
+                <pre><span class="kw">services</span>:
+  <span class="fn">kalypso</span>:
+    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">kalypso-data:/data</span>
+      - <span class="str">certs:/certs</span>
+    <span class="kw">ports</span>:
+      - <span class="str">"8200:8200"</span>
+
+  <span class="fn">web</span>:
+    <span class="kw">image</span>: <span class="str">nginx:alpine</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">certs:/etc/nginx/certs:ro</span>
+
+<span class="kw">volumes</span>:
+  <span class="fn">kalypso-data</span>:
+  <span class="fn">certs</span>:</pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="sdks">
+    <h2>Your language, your way</h2>
+    <p class="section-sub">Zero-dependency SDKs, or just use curl.</p>
+    <div class="features" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+        <div class="code-block">
+            <div class="code-header">Python</div>
+            <pre><span class="kw">from</span> kalypso_sdk <span class="kw">import</span> KalypsoClient
+
+client = KalypsoClient()
+cert = client.<span class="fn">issue</span>(<span class="str">"myapp.local"</span>)
+cert.<span class="fn">save</span>(<span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>)</pre>
+        </div>
+        <div class="code-block">
+            <div class="code-header">Ruby</div>
+            <pre><span class="kw">require</span> <span class="str">"kalypso"</span>
+
+client = Kalypso::Client.<span class="fn">new</span>
+cert = client.<span class="fn">issue</span>(<span class="str">"myapp.local"</span>)
+cert.<span class="fn">save</span>(<span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>)</pre>
+        </div>
+        <div class="code-block">
+            <div class="code-header">Go</div>
+            <pre>client := kalypso.<span class="fn">NewClient</span>(<span class="str">"http://localhost:8200"</span>)
+cert, _ := client.<span class="fn">Issue</span>(ctx, <span class="str">"myapp.local"</span>)
+cert.<span class="fn">Save</span>(<span class="str">"cert.pem"</span>, <span class="str">"key.pem"</span>)</pre>
+        </div>
+        <div class="code-block">
+            <div class="code-header">curl</div>
+            <pre>curl -X POST <span class="str">http://localhost:8200/certificates</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"domains": ["myapp.local"]}'</span></pre>
+        </div>
+    </div>
+</section>
+
+<section id="compare">
+    <h2>How Kalypso compares</h2>
+    <div class="comparison">
+        <table>
+            <thead>
+                <tr>
+                    <th>Feature</th>
+                    <th>Kalypso</th>
+                    <th>mkcert</th>
+                    <th>Self-signed</th>
+                    <th>step-ca</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Short-lived certs</td>
+                    <td class="check">24h default</td>
+                    <td class="cross">10 years</td>
+                    <td class="cross">Custom</td>
+                    <td class="check">Configurable</td>
+                </tr>
+                <tr>
+                    <td>REST API</td>
+                    <td class="check">Yes</td>
+                    <td class="cross">No</td>
+                    <td class="cross">No</td>
+                    <td class="check">ACME</td>
+                </tr>
+                <tr>
+                    <td>Docker sidecar</td>
+                    <td class="check">Yes</td>
+                    <td class="cross">No</td>
+                    <td class="cross">No</td>
+                    <td class="cross">Complex</td>
+                </tr>
+                <tr>
+                    <td>Auto-renewal</td>
+                    <td class="check">Built-in</td>
+                    <td class="cross">No</td>
+                    <td class="cross">No</td>
+                    <td class="check">Via ACME</td>
+                </tr>
+                <tr>
+                    <td>Setup complexity</td>
+                    <td class="check">2 commands</td>
+                    <td class="check">1 command</td>
+                    <td class="cross">Manual</td>
+                    <td class="cross">High</td>
+                </tr>
+                <tr>
+                    <td>SDKs</td>
+                    <td class="check">Python, Ruby, Go</td>
+                    <td class="cross">None</td>
+                    <td class="cross">None</td>
+                    <td class="check">Go</td>
+                </tr>
+                <tr>
+                    <td>Target audience</td>
+                    <td>Local dev</td>
+                    <td>Local dev</td>
+                    <td>Local dev</td>
+                    <td>Production</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<footer>
+    <p>
+        Kalypso is open source under the <a href="https://opensource.org/licenses/MIT">MIT License</a>.
+        <br>
+        <a href="https://github.com/kalypso-dev/kalypso">GitHub</a> &middot;
+        <a href="docs/getting-started.md">Docs</a> &middot;
+        <a href="docs/api.md">API</a>
+    </p>
+</footer>
+
+</body>
+</html>

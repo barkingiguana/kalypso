@@ -1,0 +1,60 @@
+# Full example: Kalypso CA + nginx with auto-issued SSL certs.
+#
+# Usage:
+#   docker compose up -d
+#   # Trust the CA cert (one-time):
+#   curl -s http://localhost:8200/ca.pem | jq -r .certificate > kalypso-ca.pem
+#   # macOS:
+#   sudo security add-trusted-cert -d -r trustRoot \
+#     -k /Library/Keychains/System.keychain kalypso-ca.pem
+#   # Then visit https://myapp.local (after adding 127.0.0.1 myapp.local to /etc/hosts)
+
+services:
+  kalypso:
+    build: ../..
+    volumes:
+      - kalypso-data:/data
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # One-shot init container that requests a cert and writes it to shared volume
+  cert-init:
+    image: curlimages/curl:latest
+    depends_on:
+      kalypso:
+        condition: service_healthy
+    volumes:
+      - certs:/certs
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        echo "Requesting certificate from Kalypso..."
+        RESPONSE=$$(curl -sf http://kalypso:8200/certificates \
+          -H 'Content-Type: application/json' \
+          -d '{"domains": ["myapp.local", "*.myapp.local"], "hours": 24}')
+        echo "$$RESPONSE" | sed -n 's/.*"certificate":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' > /certs/cert.pem
+        echo "$$RESPONSE" | sed -n 's/.*"private_key":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' > /certs/key.pem
+        echo "Certificate saved to /certs/"
+
+  web:
+    image: nginx:alpine
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  kalypso-data:
+  certs:

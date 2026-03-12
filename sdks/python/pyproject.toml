@@ -1,0 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kalypso-sdk"
+version = "0.1.0"
+description = "Python SDK for Kalypso local dev SSL CA"
+license = "MIT"
+requires-python = ">=3.9"
+# Zero dependencies — uses only stdlib urllib

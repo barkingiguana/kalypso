@@ -1,0 +1,71 @@
+# Auto-refreshing SSL certs with Kalypso.
+#
+# The cert-refresh sidecar requests a new certificate every 12 hours,
+# so your dev certs never expire even during long sessions.
+#
+# Usage:
+#   docker compose up -d
+#   # Trust the CA cert once (see main README)
+#   # Certs auto-renew — no manual intervention needed!
+
+services:
+  kalypso:
+    build: ../../..
+    volumes:
+      - kalypso-data:/data
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Sidecar that refreshes certs on a schedule
+  cert-refresh:
+    image: curlimages/curl:latest
+    depends_on:
+      kalypso:
+        condition: service_healthy
+    volumes:
+      - certs:/certs
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        fetch_cert() {
+          echo "$$(date): Requesting certificate from Kalypso..."
+          RESPONSE=$$(curl -sf http://kalypso:8200/certificates \
+            -H 'Content-Type: application/json' \
+            -d '{"domains": ["myapp.local", "*.myapp.local"], "hours": 24}')
+          if [ $$? -eq 0 ]; then
+            echo "$$RESPONSE" | sed -n 's/.*"certificate":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' > /certs/cert.pem
+            echo "$$RESPONSE" | sed -n 's/.*"private_key":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' > /certs/key.pem
+            echo "$$(date): Certificate refreshed successfully"
+          else
+            echo "$$(date): Failed to refresh certificate, will retry"
+          fi
+        }
+        # Initial fetch
+        fetch_cert
+        # Refresh every 12 hours (certs valid for 24h, so 50% lifetime)
+        while true; do
+          sleep 43200
+          fetch_cert
+        done
+
+  web:
+    image: nginx:alpine
+    depends_on:
+      cert-refresh:
+        condition: service_started
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  kalypso-data:
+  certs:
