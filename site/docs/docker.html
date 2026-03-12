@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Docker &amp; Compose — Kalypso Docs</title>
-    <meta name="description" content="Run Kalypso in Docker. Add two services to your compose file and get automatic HTTPS with auto-renewal.">
+    <meta name="description" content="Add one label to your service, get automatic HTTPS. Zero config Docker Compose SSL.">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -32,129 +32,144 @@
         </ul>
         <h4 style="margin-top:2rem">On this page</h4>
         <ul>
-            <li><a href="#quickstart">30-Second Setup</a></li>
-            <li><a href="#how-it-works">How It Works</a></li>
-            <li><a href="#nginx-conf">nginx.conf</a></li>
+            <li><a href="#magic">Magic Mode (Recommended)</a></li>
+            <li><a href="#labels">Labels Reference</a></li>
+            <li><a href="#auto-reload">Auto-Reload</a></li>
             <li><a href="#trust">Trust the CA</a></li>
-            <li><a href="#env-vars">Configuration</a></li>
+            <li><a href="#sidecar">Sidecar Mode</a></li>
             <li><a href="#containers">Inter-Container TLS</a></li>
         </ul>
     </aside>
 
     <main>
         <h1>Docker &amp; Compose</h1>
-        <p>Add two services to your <code>docker-compose.yml</code>. Certs are issued automatically, renewed automatically, and written to a shared volume. Your web server just reads them.</p>
+        <p>Add a <code>kalypso.domains</code> label to any service. Kalypso auto-discovers it, issues certs, and reloads your server. That's it.</p>
 
-        <h2 id="quickstart">30-Second Setup</h2>
-        <p>Copy this into your <code>docker-compose.yml</code>:</p>
+        <h2 id="magic">Magic Mode (Recommended)</h2>
+        <p>Mount the Docker socket and a shared certs volume. Kalypso does the rest.</p>
 
         <pre><code><span class="kw">services</span>:
-  <span class="cmt"># 1. The CA server</span>
   <span class="fn">kalypso</span>:
     <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">/var/run/docker.sock:/var/run/docker.sock:ro</span>
+      - <span class="str">kalypso-data:/data</span>
+      - <span class="str">certs:/certs</span>
     <span class="kw">ports</span>:
       - <span class="str">"8200:8200"</span>
-    <span class="kw">volumes</span>:
-      - <span class="str">kalypso-data:/data</span>
-    <span class="kw">healthcheck</span>:
-      <span class="kw">test</span>: [<span class="str">"CMD"</span>, <span class="str">"python"</span>, <span class="str">"-c"</span>, <span class="str">"import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"</span>]
-      <span class="kw">interval</span>: <span class="str">5s</span>
-      <span class="kw">timeout</span>: <span class="str">3s</span>
-      <span class="kw">retries</span>: <span class="str">5</span>
 
-  <span class="cmt"># 2. The magic sidecar — issues certs and renews them automatically</span>
-  <span class="fn">certs</span>:
-    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
-    <span class="kw">command</span>: [<span class="str">"sidecar"</span>]
-    <span class="kw">depends_on</span>:
-      <span class="fn">kalypso</span>:
-        <span class="kw">condition</span>: <span class="str">service_healthy</span>
-    <span class="kw">environment</span>:
-      <span class="fn">KALYPSO_DOMAINS</span>: <span class="str">"myapp.local,*.myapp.local"</span>
-    <span class="kw">volumes</span>:
-      - <span class="str">certs:/certs</span>
-
-  <span class="cmt"># 3. Your web server — just mount the certs volume</span>
   <span class="fn">web</span>:
     <span class="kw">image</span>: <span class="str">nginx:alpine</span>
-    <span class="kw">depends_on</span>:
-      <span class="fn">certs</span>:
-        <span class="kw">condition</span>: <span class="str">service_started</span>
-    <span class="kw">ports</span>:
-      - <span class="str">"443:443"</span>
-      - <span class="str">"80:80"</span>
+    <span class="kw">labels</span>:
+      <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local,*.myapp.local"</span>
     <span class="kw">volumes</span>:
       - <span class="str">certs:/etc/nginx/certs:ro</span>
       - <span class="str">./nginx.conf:/etc/nginx/conf.d/default.conf:ro</span>
+    <span class="kw">ports</span>:
+      - <span class="str">"443:443"</span>
 
 <span class="kw">volumes</span>:
   <span class="fn">kalypso-data</span>:
   <span class="fn">certs</span>:</code></pre>
 
-        <p>That's it. Run <code>docker compose up -d</code> and you have HTTPS.</p>
+        <p>Run <code>docker compose up -d</code>. Done.</p>
 
-        <h2 id="how-it-works">How It Works</h2>
+        <h3>What happens automatically:</h3>
         <ol>
-            <li><strong>kalypso</strong> starts and creates a root CA (or loads an existing one from the <code>kalypso-data</code> volume)</li>
-            <li><strong>certs</strong> sidecar waits for kalypso to be healthy, then requests a cert for your domains</li>
-            <li>Sidecar writes <code>cert.pem</code>, <code>key.pem</code>, <code>ca.pem</code>, and <code>fullchain.pem</code> to the shared <code>certs</code> volume</li>
-            <li><strong>web</strong> (nginx) reads certs from the shared volume</li>
-            <li>Sidecar sleeps until 50% of cert lifetime, then re-issues automatically</li>
+            <li>Kalypso starts and creates a root CA</li>
+            <li>Kalypso detects the Docker socket and watches for containers with <code>kalypso.*</code> labels</li>
+            <li>It discovers your <code>web</code> container, issues a cert for <code>myapp.local</code></li>
+            <li>Writes <code>cert.pem</code>, <code>key.pem</code>, <code>ca.pem</code>, <code>fullchain.pem</code> to the shared <code>certs</code> volume</li>
+            <li>Detects nginx and runs <code>nginx -s reload</code> automatically</li>
+            <li>Renews at 50% lifetime (every 12h by default)</li>
         </ol>
 
-        <h2 id="nginx-conf">nginx.conf</h2>
-        <p>Create an <code>nginx.conf</code> next to your <code>docker-compose.yml</code>:</p>
-
+        <h3>nginx.conf</h3>
         <pre><code><span class="kw">server</span> {
-    <span class="fn">listen</span> 80;
-    <span class="fn">server_name</span> myapp.local;
-    <span class="fn">return</span> 301 https://$host$request_uri;
-}
-
-<span class="kw">server</span> {
     <span class="fn">listen</span> 443 ssl;
     <span class="fn">server_name</span> myapp.local;
-
     <span class="fn">ssl_certificate</span>     /etc/nginx/certs/cert.pem;
     <span class="fn">ssl_certificate_key</span> /etc/nginx/certs/key.pem;
-
-    <span class="fn">ssl_protocols</span> TLSv1.2 TLSv1.3;
-
     <span class="kw">location</span> / {
-        <span class="cmt"># proxy_pass, root, etc. — your app here</span>
-        <span class="fn">return</span> 200 <span class="str">'Hello from HTTPS!'</span>;
-        <span class="fn">add_header</span> Content-Type text/html;
+        <span class="cmt"># your app here</span>
     }
 }</code></pre>
 
-        <h2 id="trust">Trust the CA on Your Host</h2>
-        <p>Your browser needs to trust the Kalypso CA. This is a one-time step:</p>
+        <h2 id="labels">Labels Reference</h2>
+        <p>Add these labels to any service you want Kalypso to manage:</p>
+        <table>
+            <thead>
+                <tr><th>Label</th><th>Required</th><th>Default</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>kalypso.domains</code></td><td>Yes</td><td>—</td><td>Comma-separated domains</td></tr>
+                <tr><td><code>kalypso.hours</code></td><td>No</td><td><code>24</code></td><td>Cert lifetime in hours</td></tr>
+                <tr><td><code>kalypso.cert_dir</code></td><td>No</td><td>auto</td><td>Subdirectory under <code>/certs</code></td></tr>
+                <tr><td><code>kalypso.reload</code></td><td>No</td><td>auto-detected</td><td>Reload command to exec</td></tr>
+            </tbody>
+        </table>
 
-        <pre><code><span class="cmt"># Download the CA certificate (it's raw PEM, no jq needed)</span>
-curl http://localhost:8200/ca.pem > kalypso-ca.pem
+        <h2 id="auto-reload">Auto-Reload Detection</h2>
+        <p>Kalypso auto-detects the reload command from the container image:</p>
+        <table>
+            <thead>
+                <tr><th>Image</th><th>Auto-detected reload</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>nginx:*</code></td><td><code>nginx -s reload</code></td></tr>
+                <tr><td><code>httpd:*</code> / <code>apache:*</code></td><td><code>apachectl graceful</code></td></tr>
+                <tr><td><code>haproxy:*</code></td><td><code>kill -USR2 1</code></td></tr>
+                <tr><td><code>caddy:*</code></td><td><code>caddy reload</code></td></tr>
+                <tr><td><code>traefik:*</code></td><td>None needed (watches files)</td></tr>
+            </tbody>
+        </table>
+        <p>For other images, add <code>kalypso.reload</code> label:</p>
+        <pre><code><span class="kw">labels</span>:
+  <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local"</span>
+  <span class="fn">kalypso.reload</span>: <span class="str">"kill -HUP 1"</span></code></pre>
+
+        <h2 id="trust">Trust the CA on Your Host</h2>
+        <p>When Kalypso starts, it prints trust instructions in the Docker logs. Or just run:</p>
+
+        <pre><code><span class="cmt"># Download the CA cert (raw PEM, no jq needed)</span>
+curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
 
 <span class="cmt"># macOS</span>
 sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain kalypso-ca.pem
+  -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
 
 <span class="cmt"># Ubuntu / Debian</span>
-sudo cp kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt
+sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt
 sudo update-ca-certificates
 
 <span class="cmt"># Fedora / Arch</span>
-sudo trust anchor kalypso-ca.pem
-
-<span class="cmt"># Or if you have kalypso installed locally:</span>
-pip install kalypso
-kalypso init          <span class="cmt"># skip if using Docker CA</span>
-sudo kalypso trust    <span class="cmt"># auto-detects your OS</span></code></pre>
+sudo trust anchor /tmp/kalypso-ca.pem</code></pre>
 
         <p>Then add to <code>/etc/hosts</code>:</p>
         <pre><code>127.0.0.1 myapp.local</code></pre>
-        <p>Visit <code>https://myapp.local</code> — green lock, zero warnings.</p>
 
-        <h2 id="env-vars">Sidecar Configuration</h2>
-        <p>The sidecar is configured entirely through environment variables:</p>
+        <h2 id="sidecar">Sidecar Mode (Alternative)</h2>
+        <p>If you don't want to mount the Docker socket, use the sidecar pattern instead. Add a second Kalypso container with <code>command: ["sidecar"]</code>:</p>
+
+        <pre><code><span class="kw">services</span>:
+  <span class="fn">kalypso</span>:
+    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">volumes</span>: [<span class="str">kalypso-data:/data</span>]
+    <span class="kw">ports</span>: [<span class="str">"8200:8200"</span>]
+
+  <span class="fn">certs</span>:
+    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">command</span>: [<span class="str">"sidecar"</span>]
+    <span class="kw">environment</span>:
+      <span class="fn">KALYPSO_DOMAINS</span>: <span class="str">"myapp.local"</span>
+    <span class="kw">volumes</span>: [<span class="str">certs:/certs</span>]
+
+  <span class="fn">web</span>:
+    <span class="kw">image</span>: <span class="str">nginx:alpine</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">certs:/etc/nginx/certs:ro</span></code></pre>
+
+        <h3>Sidecar Environment Variables</h3>
         <table>
             <thead>
                 <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
@@ -162,28 +177,14 @@ sudo kalypso trust    <span class="cmt"># auto-detects your OS</span></code></pr
             <tbody>
                 <tr><td><code>KALYPSO_DOMAINS</code></td><td>—</td><td>Comma-separated domains (required)</td></tr>
                 <tr><td><code>KALYPSO_SERVER</code></td><td><code>http://kalypso:8200</code></td><td>Kalypso server URL</td></tr>
-                <tr><td><code>KALYPSO_CERT_DIR</code></td><td><code>/certs</code></td><td>Where to write cert files</td></tr>
+                <tr><td><code>KALYPSO_CERT_DIR</code></td><td><code>/certs</code></td><td>Output directory</td></tr>
                 <tr><td><code>KALYPSO_HOURS</code></td><td><code>24</code></td><td>Cert lifetime in hours</td></tr>
-                <tr><td><code>KALYPSO_RELOAD_CMD</code></td><td>—</td><td>Command to run after renewal</td></tr>
-            </tbody>
-        </table>
-
-        <h3>Output files</h3>
-        <p>The sidecar writes these files to <code>KALYPSO_CERT_DIR</code>:</p>
-        <table>
-            <thead>
-                <tr><th>File</th><th>Contents</th></tr>
-            </thead>
-            <tbody>
-                <tr><td><code>cert.pem</code></td><td>The leaf certificate</td></tr>
-                <tr><td><code>key.pem</code></td><td>The private key</td></tr>
-                <tr><td><code>ca.pem</code></td><td>The CA certificate</td></tr>
-                <tr><td><code>fullchain.pem</code></td><td>cert.pem + ca.pem combined</td></tr>
+                <tr><td><code>KALYPSO_RELOAD_CMD</code></td><td>—</td><td>Post-renewal command</td></tr>
             </tbody>
         </table>
 
         <h2 id="containers">Inter-Container TLS</h2>
-        <p>If container A needs to call container B over HTTPS with a Kalypso cert, tell your language's HTTP client to trust the CA:</p>
+        <p>If container A needs to call container B over HTTPS:</p>
         <pre><code><span class="kw">services</span>:
   <span class="fn">my-service</span>:
     <span class="kw">environment</span>:

@@ -94,9 +94,16 @@ def issue(ctx: click.Context, domains: tuple[str, ...], hours: int, ip: tuple[st
 
 
 @main.command()
+@click.option("--watch/--no-watch", default=None, help="Auto-discover containers via Docker socket")
 @click.pass_context
-def serve(ctx: click.Context) -> None:
-    """Start the Kalypso API server."""
+def serve(ctx: click.Context, watch: bool | None) -> None:
+    """Start the Kalypso API server.
+
+    With --watch (or when /var/run/docker.sock exists), Kalypso watches for
+    containers with kalypso.domains labels and auto-issues certs for them.
+    """
+    import threading
+
     import uvicorn
 
     data_dir: Path = ctx.obj["data_dir"]
@@ -110,7 +117,44 @@ def serve(ctx: click.Context) -> None:
         srv.CA_CERT_PATH = cert_path
         srv.CA_KEY_PATH = key_path
 
-    click.echo("Starting Kalypso server on http://0.0.0.0:8200")
+    # Auto-detect Docker socket if --watch not specified
+    docker_socket = Path("/var/run/docker.sock")
+    if watch is None:
+        watch = docker_socket.exists()
+
+    click.echo("=" * 60)
+    click.echo("  Kalypso — Local Dev SSL Certificate Authority")
+    click.echo("=" * 60)
+    click.echo()
+    click.echo("  API:    http://0.0.0.0:8200")
+    click.echo(f"  Data:   {data_dir}")
+    click.echo()
+    click.echo("  Trust the CA on your host machine:")
+    click.echo("    curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem")
+    click.echo()
+    click.echo("    macOS:        sudo security add-trusted-cert -d -r trustRoot \\")
+    click.echo("                    -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem")
+    click.echo("    Ubuntu:       sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt \\")
+    click.echo("                    && sudo update-ca-certificates")
+    click.echo("    Fedora/Arch:  sudo trust anchor /tmp/kalypso-ca.pem")
+    click.echo()
+
+    if watch:
+        click.echo("  Docker: Watching for containers with kalypso.domains labels")
+        click.echo()
+
+        def _start_watcher() -> None:
+            import time
+            time.sleep(2)  # Wait for server to be ready
+            from kalypso.server import get_ca
+            from kalypso.docker_watcher import DockerWatcher
+            ca = get_ca()
+            watcher = DockerWatcher(ca=ca, socket_path=str(docker_socket))
+            watcher.run()
+
+        t = threading.Thread(target=_start_watcher, daemon=True)
+        t.start()
+
     uvicorn.run("kalypso.server:app", host="0.0.0.0", port=8200, log_level="info")
 
 

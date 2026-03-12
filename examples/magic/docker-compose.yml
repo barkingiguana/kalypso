@@ -1,0 +1,51 @@
+# The simplest possible Kalypso setup.
+#
+# Just add a `kalypso.domains` label to any service.
+# Kalypso auto-discovers it, issues certs, and reloads nginx.
+#
+# Usage:
+#   docker compose up -d
+#
+#   # Trust the CA on your host (one time):
+#   curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
+#   # macOS:  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
+#   # Ubuntu: sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt && sudo update-ca-certificates
+#
+#   # Add to /etc/hosts:
+#   127.0.0.1 myapp.local
+#
+#   # Visit https://myapp.local
+
+services:
+  kalypso:
+    build: ../..
+    # image: kalypso/kalypso:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - kalypso-data:/data
+      - certs:/certs
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  web:
+    image: nginx:alpine
+    labels:
+      kalypso.domains: "myapp.local,*.myapp.local"
+    depends_on:
+      kalypso:
+        condition: service_healthy
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  kalypso-data:
+  certs:
