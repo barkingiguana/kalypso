@@ -32,11 +32,12 @@
         </ul>
         <h4 style="margin-top:2rem">On this page</h4>
         <ul>
-            <li><a href="#magic">Magic Mode (Recommended)</a></li>
+            <li><a href="#zero-config">Zero-Config Mode (Recommended)</a></li>
             <li><a href="#labels">Labels Reference</a></li>
-            <li><a href="#auto-reload">Auto-Reload</a></li>
+            <li><a href="#image-profiles">Image Profiles</a></li>
+            <li><a href="#server-flags">Server Flags</a></li>
             <li><a href="#trust">Trust the CA</a></li>
-            <li><a href="#shared-ca">Shared CA (Multi-Project)</a></li>
+            <li><a href="#shared-volume">Shared Volume Mode</a></li>
             <li><a href="#sidecar">Sidecar Mode</a></li>
             <li><a href="#containers">Inter-Container TLS</a></li>
         </ul>
@@ -44,14 +45,142 @@
 
     <main>
         <h1>Docker &amp; Compose</h1>
-        <p>Add a <code>kalypso.domains</code> label to any service. Kalypso auto-discovers it, issues certs, and reloads your server. That's it.</p>
+        <p>Add a <code>kalypso.domains</code> label to any container. Kalypso auto-discovers it, issues certs, injects them directly, trusts the CA inside the container, and reloads. No shared volumes. No shared networks. Just a label.</p>
 
-        <h2 id="magic">Magic Mode (Recommended)</h2>
-        <p>Mount the Docker socket and a shared certs volume. Kalypso does the rest.</p>
+        <h2 id="zero-config">Zero-Config Mode (Recommended)</h2>
+        <p>Run Kalypso <strong>once</strong> on your machine. Every project gets HTTPS automatically — completely separate Compose stacks, no coupling.</p>
+
+        <h3>1. Start Kalypso (once per machine)</h3>
+        <pre><code><span class="cmt"># kalypso/docker-compose.yml — run this once</span>
+<span class="kw">services</span>:
+  <span class="fn">kalypso</span>:
+    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">/var/run/docker.sock:/var/run/docker.sock:ro</span>
+      - <span class="str">kalypso-data:/data</span>
+    <span class="kw">ports</span>:
+      - <span class="str">"8200:8200"</span>
+
+<span class="kw">volumes</span>:
+  <span class="fn">kalypso-data</span>:</code></pre>
+
+        <h3>2. Add one label to any project</h3>
+        <pre><code><span class="cmt"># webapp/docker-compose.yml — a totally separate project</span>
+<span class="kw">services</span>:
+  <span class="fn">web</span>:
+    <span class="kw">image</span>: <span class="str">nginx:alpine</span>
+    <span class="kw">labels</span>:
+      <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local,*.myapp.local"</span>
+    <span class="kw">ports</span>:
+      - <span class="str">"443:443"</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">./nginx.conf:/etc/nginx/conf.d/default.conf:ro</span></code></pre>
+
+        <p>That's it. No shared volumes, no shared networks, no <code>depends_on</code>. Run <code>docker compose up -d</code> in each directory.</p>
+
+        <h3>What happens automatically:</h3>
+        <ol>
+            <li>Kalypso detects your <code>web</code> container via the Docker socket</li>
+            <li>Issues a cert for <code>myapp.local</code></li>
+            <li>Knows it's nginx — injects <code>cert.pem</code> and <code>key.pem</code> into <code>/etc/nginx/ssl/</code> directly via the Docker API</li>
+            <li>Injects the CA into the container's system trust store</li>
+            <li>Runs <code>nginx -s reload</code> automatically</li>
+            <li>Renews at 50% lifetime (every 12h by default)</li>
+        </ol>
+
+        <h3>nginx.conf</h3>
+        <pre><code><span class="kw">server</span> {
+    <span class="fn">listen</span> 443 ssl;
+    <span class="fn">server_name</span> myapp.local;
+    <span class="cmt"># Kalypso knows these paths for nginx — no config needed</span>
+    <span class="fn">ssl_certificate</span>     /etc/nginx/ssl/cert.pem;
+    <span class="fn">ssl_certificate_key</span> /etc/nginx/ssl/key.pem;
+    <span class="kw">location</span> / {
+        <span class="cmt"># your app here</span>
+    }
+}</code></pre>
+
+        <h2 id="labels">Labels Reference</h2>
+        <p>Add these labels to any container you want Kalypso to manage:</p>
+        <table>
+            <thead>
+                <tr><th>Label</th><th>Required</th><th>Default</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>kalypso.domains</code></td><td>Yes</td><td>—</td><td>Comma-separated domains</td></tr>
+                <tr><td><code>kalypso.cert-path</code></td><td>No</td><td>auto-detected</td><td>Override cert path inside container</td></tr>
+                <tr><td><code>kalypso.key-path</code></td><td>No</td><td>auto-detected</td><td>Override key path inside container</td></tr>
+                <tr><td><code>kalypso.ca-path</code></td><td>No</td><td>auto-detected</td><td>Override CA cert path inside container</td></tr>
+                <tr><td><code>kalypso.reload</code></td><td>No</td><td>auto-detected</td><td>Reload command to exec</td></tr>
+                <tr><td><code>kalypso.hours</code></td><td>No</td><td><code>24</code></td><td>Cert lifetime in hours</td></tr>
+                <tr><td><code>kalypso.trust</code></td><td>No</td><td><code>true</code></td><td>Set to <code>"false"</code> to skip CA trust store injection</td></tr>
+                <tr><td><code>kalypso.auto</code></td><td>No</td><td><code>true</code></td><td>Set to <code>"false"</code> to disable image-based auto-detection</td></tr>
+            </tbody>
+        </table>
+
+        <h2 id="image-profiles">Image Profiles</h2>
+        <p>Kalypso auto-detects cert paths and reload commands from the container image:</p>
+        <table>
+            <thead>
+                <tr><th>Image</th><th>Cert path</th><th>Key path</th><th>Reload command</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>nginx:*</code></td><td><code>/etc/nginx/ssl/cert.pem</code></td><td><code>/etc/nginx/ssl/key.pem</code></td><td><code>nginx -s reload</code></td></tr>
+                <tr><td><code>httpd:*</code> / <code>apache:*</code></td><td><code>/usr/local/apache2/conf/server.crt</code></td><td><code>...server.key</code></td><td><code>apachectl graceful</code></td></tr>
+                <tr><td><code>haproxy:*</code></td><td><code>/usr/local/etc/haproxy/certs/cert.pem</code></td><td><code>...key.pem</code></td><td><code>kill -USR2 1</code></td></tr>
+                <tr><td><code>caddy:*</code></td><td><code>/etc/caddy/certs/cert.pem</code></td><td><code>...key.pem</code></td><td>None (file watcher)</td></tr>
+                <tr><td><code>traefik:*</code></td><td><code>/etc/traefik/certs/cert.pem</code></td><td><code>...key.pem</code></td><td>None (file watcher)</td></tr>
+                <tr><td>Everything else</td><td><code>/etc/ssl/kalypso/cert.pem</code></td><td><code>...key.pem</code></td><td>None</td></tr>
+            </tbody>
+        </table>
+        <p>For unknown images, use labels to tell Kalypso where certs go:</p>
+        <pre><code><span class="kw">labels</span>:
+  <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local"</span>
+  <span class="fn">kalypso.cert-path</span>: <span class="str">"/app/certs/cert.pem"</span>
+  <span class="fn">kalypso.key-path</span>: <span class="str">"/app/certs/key.pem"</span>
+  <span class="fn">kalypso.reload</span>: <span class="str">"kill -HUP 1"</span></code></pre>
+
+        <h2 id="server-flags">Server Flags</h2>
+        <p>Control what Kalypso does automatically with flags on the <code>serve</code> command (or env vars):</p>
+        <table>
+            <thead>
+                <tr><th>Flag</th><th>Env var</th><th>Default</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>--auto-inject / --no-auto-inject</code></td><td><code>KALYPSO_AUTO_INJECT</code></td><td>on</td><td>Inject certs directly into containers</td></tr>
+                <tr><td><code>--auto-trust / --no-auto-trust</code></td><td><code>KALYPSO_AUTO_TRUST</code></td><td>on</td><td>Inject CA into container trust stores</td></tr>
+                <tr><td><code>--auto-reload / --no-auto-reload</code></td><td><code>KALYPSO_AUTO_RELOAD</code></td><td>on</td><td>Auto-detect and run reload commands</td></tr>
+            </tbody>
+        </table>
+        <p>Turn off <code>--no-auto-inject</code> to fall back to the shared-volume approach described below.</p>
+
+        <h2 id="trust">Trust the CA on Your Host</h2>
+        <p>Kalypso auto-trusts the CA <em>inside</em> containers. For your <strong>host machine</strong> (browser, curl, etc.):</p>
+
+        <pre><code><span class="cmt"># Download the CA cert</span>
+curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
+
+<span class="cmt"># macOS</span>
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
+
+<span class="cmt"># Ubuntu / Debian</span>
+sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt
+sudo update-ca-certificates
+
+<span class="cmt"># Fedora / Arch</span>
+sudo trust anchor /tmp/kalypso-ca.pem</code></pre>
+
+        <p>Then add to <code>/etc/hosts</code>:</p>
+        <pre><code>127.0.0.1 myapp.local</code></pre>
+
+        <h2 id="shared-volume">Shared Volume Mode</h2>
+        <p>If you prefer shared volumes over direct injection (or need read-only containers), use <code>--no-auto-inject</code> and mount a shared certs volume:</p>
 
         <pre><code><span class="kw">services</span>:
   <span class="fn">kalypso</span>:
     <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">command</span>: [<span class="str">"--data-dir"</span>, <span class="str">"/data"</span>, <span class="str">"serve"</span>, <span class="str">"--no-auto-inject"</span>]
     <span class="kw">volumes</span>:
       - <span class="str">/var/run/docker.sock:/var/run/docker.sock:ro</span>
       - <span class="str">kalypso-data:/data</span>
@@ -73,117 +202,8 @@
   <span class="fn">kalypso-data</span>:
   <span class="fn">certs</span>:</code></pre>
 
-        <p>Run <code>docker compose up -d</code>. Done.</p>
-
-        <h3>What happens automatically:</h3>
-        <ol>
-            <li>Kalypso starts and creates a root CA</li>
-            <li>Kalypso detects the Docker socket and watches for containers with <code>kalypso.*</code> labels</li>
-            <li>It discovers your <code>web</code> container, issues a cert for <code>myapp.local</code></li>
-            <li>Writes <code>cert.pem</code>, <code>key.pem</code>, <code>ca.pem</code>, <code>fullchain.pem</code> to the shared <code>certs</code> volume</li>
-            <li>Detects nginx and runs <code>nginx -s reload</code> automatically</li>
-            <li>Renews at 50% lifetime (every 12h by default)</li>
-        </ol>
-
-        <h3>nginx.conf</h3>
-        <pre><code><span class="kw">server</span> {
-    <span class="fn">listen</span> 443 ssl;
-    <span class="fn">server_name</span> myapp.local;
-    <span class="fn">ssl_certificate</span>     /etc/nginx/certs/cert.pem;
-    <span class="fn">ssl_certificate_key</span> /etc/nginx/certs/key.pem;
-    <span class="kw">location</span> / {
-        <span class="cmt"># your app here</span>
-    }
-}</code></pre>
-
-        <h2 id="labels">Labels Reference</h2>
-        <p>Add these labels to any service you want Kalypso to manage:</p>
-        <table>
-            <thead>
-                <tr><th>Label</th><th>Required</th><th>Default</th><th>Description</th></tr>
-            </thead>
-            <tbody>
-                <tr><td><code>kalypso.domains</code></td><td>Yes</td><td>—</td><td>Comma-separated domains</td></tr>
-                <tr><td><code>kalypso.hours</code></td><td>No</td><td><code>24</code></td><td>Cert lifetime in hours</td></tr>
-                <tr><td><code>kalypso.cert_dir</code></td><td>No</td><td>auto</td><td>Subdirectory under <code>/certs</code></td></tr>
-                <tr><td><code>kalypso.reload</code></td><td>No</td><td>auto-detected</td><td>Reload command to exec</td></tr>
-            </tbody>
-        </table>
-
-        <h2 id="auto-reload">Auto-Reload Detection</h2>
-        <p>Kalypso auto-detects the reload command from the container image:</p>
-        <table>
-            <thead>
-                <tr><th>Image</th><th>Auto-detected reload</th></tr>
-            </thead>
-            <tbody>
-                <tr><td><code>nginx:*</code></td><td><code>nginx -s reload</code></td></tr>
-                <tr><td><code>httpd:*</code> / <code>apache:*</code></td><td><code>apachectl graceful</code></td></tr>
-                <tr><td><code>haproxy:*</code></td><td><code>kill -USR2 1</code></td></tr>
-                <tr><td><code>caddy:*</code></td><td><code>caddy reload</code></td></tr>
-                <tr><td><code>traefik:*</code></td><td>None needed (watches files)</td></tr>
-            </tbody>
-        </table>
-        <p>For other images, add <code>kalypso.reload</code> label:</p>
-        <pre><code><span class="kw">labels</span>:
-  <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local"</span>
-  <span class="fn">kalypso.reload</span>: <span class="str">"kill -HUP 1"</span></code></pre>
-
-        <h2 id="trust">Trust the CA on Your Host</h2>
-        <p>When Kalypso starts, it prints trust instructions in the Docker logs. Or just run:</p>
-
-        <pre><code><span class="cmt"># Download the CA cert (raw PEM, no jq needed)</span>
-curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
-
-<span class="cmt"># macOS</span>
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
-
-<span class="cmt"># Ubuntu / Debian</span>
-sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt
-sudo update-ca-certificates
-
-<span class="cmt"># Fedora / Arch</span>
-sudo trust anchor /tmp/kalypso-ca.pem</code></pre>
-
-        <p>Then add to <code>/etc/hosts</code>:</p>
-        <pre><code>127.0.0.1 myapp.local</code></pre>
-
-        <h2 id="shared-ca">Shared CA (Multi-Project)</h2>
-        <p>Run Kalypso <strong>once</strong> with the Docker socket. Every project on the machine gets HTTPS — no sidecars, no shared networks.</p>
-
-        <h3>1. Start Kalypso (once)</h3>
-        <pre><code><span class="cmt"># docker-compose.yml for the shared Kalypso</span>
-<span class="kw">services</span>:
-  <span class="fn">kalypso</span>:
-    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
-    <span class="kw">volumes</span>:
-      - <span class="str">/var/run/docker.sock:/var/run/docker.sock:ro</span>
-      - <span class="str">kalypso-data:/data</span>
-      - <span class="str">~/.kalypso/certs:/certs</span>
-    <span class="kw">ports</span>:
-      - <span class="str">"8200:8200"</span>
-
-<span class="kw">volumes</span>:
-  <span class="fn">kalypso-data</span>:</code></pre>
-
-        <h3>2. Add labels to any project</h3>
-        <pre><code><span class="cmt"># In any other Compose stack — no sidecar needed</span>
-<span class="kw">services</span>:
-  <span class="fn">web</span>:
-    <span class="kw">image</span>: <span class="str">nginx:alpine</span>
-    <span class="kw">labels</span>:
-      <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local"</span>
-      <span class="fn">kalypso.cert_dir</span>: <span class="str">"myapp"</span>
-    <span class="kw">volumes</span>:
-      - <span class="str">~/.kalypso/certs/myapp:/etc/nginx/certs:ro</span></code></pre>
-
-        <p>Kalypso watches the Docker socket for <em>all</em> containers on the host. When your project starts, it auto-discovers it, issues a cert, writes it to the shared host directory, and reloads nginx.</p>
-
-        <p>See <a href="https://github.com/kalypso-dev/kalypso/tree/main/examples/shared-ca"><code>examples/shared-ca/</code></a> for a full multi-project setup.</p>
-
-        <h2 id="sidecar">Sidecar Mode (Alternative)</h2>
-        <p>If you don't want to mount the Docker socket, use the sidecar pattern instead. Add a second Kalypso container with <code>command: ["sidecar"]</code>:</p>
+        <h2 id="sidecar">Sidecar Mode</h2>
+        <p>If you don't want to mount the Docker socket at all, use the sidecar pattern:</p>
 
         <pre><code><span class="kw">services</span>:
   <span class="fn">kalypso</span>:
@@ -218,15 +238,13 @@ sudo trust anchor /tmp/kalypso-ca.pem</code></pre>
         </table>
 
         <h2 id="containers">Inter-Container TLS</h2>
-        <p>If container A needs to call container B over HTTPS:</p>
+        <p>Kalypso auto-trusts the CA inside containers. But if you need a specific app runtime to trust it (e.g. Python <code>requests</code>, Node.js), set the env var:</p>
         <pre><code><span class="kw">services</span>:
   <span class="fn">my-service</span>:
     <span class="kw">environment</span>:
-      - <span class="str">REQUESTS_CA_BUNDLE=/certs/ca.pem</span>           <span class="cmt"># Python requests</span>
-      - <span class="str">NODE_EXTRA_CA_CERTS=/certs/ca.pem</span>          <span class="cmt"># Node.js</span>
-      - <span class="str">SSL_CERT_FILE=/certs/ca.pem</span>                <span class="cmt"># Ruby, Go, curl</span>
-    <span class="kw">volumes</span>:
-      - <span class="str">certs:/certs:ro</span></code></pre>
+      - <span class="str">REQUESTS_CA_BUNDLE=/etc/ssl/kalypso/ca.pem</span>    <span class="cmt"># Python requests</span>
+      - <span class="str">NODE_EXTRA_CA_CERTS=/etc/ssl/kalypso/ca.pem</span>   <span class="cmt"># Node.js</span>
+      - <span class="str">SSL_CERT_FILE=/etc/ssl/kalypso/ca.pem</span>         <span class="cmt"># Ruby, Go, curl</span></code></pre>
 
         <div class="next-page">
             <a href="getting-started.html">&larr; Back to Getting Started</a>
