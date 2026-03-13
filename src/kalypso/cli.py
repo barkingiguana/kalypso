@@ -64,6 +64,62 @@ def _print_trust_instructions(cert_path: Path) -> None:
         click.echo(f"  {line}")
 
 
+@main.command(name="import-ca")
+@click.option("--cert", required=True, type=click.Path(exists=True, path_type=Path), help="Path to CA certificate PEM file")
+@click.option("--key", required=True, type=click.Path(exists=True, path_type=Path), help="Path to CA private key PEM file")
+@click.option("--org", default="Kalypso Dev CA", help="Organization name for issued certs")
+@click.pass_context
+def import_ca(ctx: click.Context, cert: Path, key: Path, org: str) -> None:
+    """Import an external CA (e.g. mkcert, corporate CA).
+
+    Use this when your team already has a trusted CA and you want Kalypso
+    to issue certs signed by it. Endpoints that already trust the external
+    CA will automatically trust Kalypso-issued certs.
+
+    \b
+    Examples:
+      # Import an mkcert CA
+      kalypso import-ca --cert "$(mkcert -CAROOT)/rootCA.pem" --key "$(mkcert -CAROOT)/rootCA-key.pem"
+
+      # Import a corporate CA
+      kalypso import-ca --cert /path/to/corp-ca.pem --key /path/to/corp-ca-key.pem
+    """
+    from kalypso.ca import _secure_write
+
+    data_dir: Path = ctx.obj["data_dir"]
+    dest_cert = data_dir / "ca-cert.pem"
+    dest_key = data_dir / "ca-key.pem"
+
+    if dest_cert.exists():
+        click.echo(f"CA already exists at {data_dir}", err=True)
+        click.echo("Remove it first, or use --data-dir to specify a different location.")
+        sys.exit(1)
+
+    # Validate before copying
+    cert_pem = cert.read_bytes()
+    key_pem = key.read_bytes()
+
+    try:
+        ca = CertificateAuthority.import_external(cert_pem, key_pem, organization=org)
+    except (ValueError, TypeError) as exc:
+        click.echo(f"Import failed: {exc}", err=True)
+        sys.exit(1)
+
+    # Save validated cert+key to Kalypso's data dir
+    data_dir.mkdir(parents=True, exist_ok=True)
+    dest_cert.write_bytes(cert_pem)
+    _secure_write(dest_key, key_pem, mode=0o600)
+
+    click.echo(f"External CA imported to {data_dir}")
+    click.echo(f"  Subject:      {ca.root.certificate.subject.rfc4514_string()}")
+    click.echo(f"  Fingerprint:  {ca.root.cert_fingerprint}")
+    click.echo(f"  Key type:     {'RSA' if 'RSA' in type(ca.root.private_key).__name__ else 'EC'}")
+    click.echo(f"  Not after:    {ca.root.certificate.not_valid_after_utc}")
+    click.echo()
+    click.echo("Kalypso will now sign certs with this CA.")
+    click.echo("Endpoints that already trust it will trust Kalypso-issued certs automatically.")
+
+
 @main.command()
 @click.argument("domains", nargs=-1, required=True)
 @click.option("--hours", default=24, help="Certificate lifetime in hours (max 168)")

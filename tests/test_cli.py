@@ -155,6 +155,161 @@ class TestIssueCommand:
             assert (mode & (stat.S_IRWXG | stat.S_IRWXO)) == 0
 
 
+class TestImportCaCommand:
+    def _write_rsa_ca(self, td: str) -> tuple[Path, Path]:
+        """Helper: create RSA CA files in a temp dir."""
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        import datetime
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+        name = x509.Name([
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Corp"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Corp Root CA"),
+        ])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=3650))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True, key_cert_sign=True, crl_sign=True,
+                    content_commitment=False, key_encipherment=False,
+                    data_encipherment=False, key_agreement=False,
+                    encipher_only=False, decipher_only=False,
+                ),
+                critical=True,
+            )
+            .sign(key, hashes.SHA256())
+        )
+
+        cert_path = Path(td) / "corp-ca.pem"
+        key_path = Path(td) / "corp-ca-key.pem"
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ))
+        return cert_path, key_path
+
+    def test_import_rsa_ca(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            cert_path, key_path = self._write_rsa_ca(td)
+            data_dir = Path(td) / "kalypso"
+            result = runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "import-ca",
+                "--cert", str(cert_path),
+                "--key", str(key_path),
+            ])
+            assert result.exit_code == 0
+            assert "External CA imported" in result.output
+            assert "RSA" in result.output
+            assert (data_dir / "ca-cert.pem").exists()
+            assert (data_dir / "ca-key.pem").exists()
+
+    def test_import_then_issue(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            cert_path, key_path = self._write_rsa_ca(td)
+            data_dir = Path(td) / "kalypso"
+            out_dir = Path(td) / "certs"
+            runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "import-ca",
+                "--cert", str(cert_path),
+                "--key", str(key_path),
+            ])
+            result = runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "issue", "myapp.local",
+                "--out", str(out_dir),
+            ])
+            assert result.exit_code == 0
+            assert (out_dir / "cert.pem").exists()
+
+    def test_import_refuses_if_ca_exists(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            cert_path, key_path = self._write_rsa_ca(td)
+            data_dir = Path(td) / "kalypso"
+            runner.invoke(main, ["--data-dir", str(data_dir), "init"])
+            result = runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "import-ca",
+                "--cert", str(cert_path),
+                "--key", str(key_path),
+            ])
+            assert result.exit_code == 1
+            assert "already exists" in result.output
+
+    def test_import_rejects_leaf_cert(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography import x509
+            from cryptography.x509.oid import NameOID
+            import datetime
+
+            key = ec.generate_private_key(ec.SECP256R1())
+            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "leaf")])
+            now = datetime.datetime.now(datetime.timezone.utc)
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(name)
+                .issuer_name(name)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now)
+                .not_valid_after(now + datetime.timedelta(hours=24))
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                .sign(key, hashes.SHA256())
+            )
+            cert_path = Path(td) / "leaf.pem"
+            key_path = Path(td) / "leaf-key.pem"
+            cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+            key_path.write_bytes(key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ))
+            data_dir = Path(td) / "kalypso"
+            result = runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "import-ca",
+                "--cert", str(cert_path),
+                "--key", str(key_path),
+            ])
+            assert result.exit_code == 1
+            assert "CA:FALSE" in result.output
+
+    def test_import_sets_key_permissions(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as td:
+            cert_path, key_path = self._write_rsa_ca(td)
+            data_dir = Path(td) / "kalypso"
+            runner.invoke(main, [
+                "--data-dir", str(data_dir),
+                "import-ca",
+                "--cert", str(cert_path),
+                "--key", str(key_path),
+            ])
+            dest_key = data_dir / "ca-key.pem"
+            mode = dest_key.stat().st_mode
+            assert (mode & (stat.S_IRWXG | stat.S_IRWXO)) == 0
+
+
 class TestCaCertCommand:
     def test_prints_ca_cert(self):
         runner = CliRunner()

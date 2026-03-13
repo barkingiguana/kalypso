@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -68,6 +69,19 @@ def get_ca() -> CertificateAuthority:
     global _ca  # noqa: PLW0603
     if _ca is not None:
         return _ca
+
+    # Support importing external CAs via env vars (e.g. from mkcert or corporate CA)
+    env_cert = os.environ.get("KALYPSO_CA_CERT")
+    env_key = os.environ.get("KALYPSO_CA_KEY")
+
+    if env_cert and env_key:
+        env_cert_path = Path(env_cert)
+        env_key_path = Path(env_key)
+        if env_cert_path.exists() and env_key_path.exists():
+            logger.info("Loading external CA from KALYPSO_CA_CERT=%s", env_cert)
+            _ca = CertificateAuthority.load(env_cert_path, env_key_path)
+            return _ca
+        logger.warning("KALYPSO_CA_CERT/KEY set but files not found, falling back")
 
     if CA_CERT_PATH.exists() and CA_KEY_PATH.exists():
         logger.info("Loading existing CA from %s", CA_CERT_PATH)
