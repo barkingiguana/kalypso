@@ -1,0 +1,26 @@
+# Kalypso infrastructure — run once per machine.
+#
+# This is completely independent from any project stacks.
+# Kalypso watches the Docker socket and auto-injects certs into
+# any container that has a `kalypso.domains` label — no shared
+# volumes, no shared networks, no depends_on.
+#
+# Usage:
+#   docker compose up -d
+#
+#   # Trust the CA on your host (one time):
+#   curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
+#   # macOS:  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
+#   # Ubuntu: sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt && sudo update-ca-certificates
+
+services:
+  kalypso:
+    build: ../../..
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - kalypso-data:/data
+    ports:
+      - "8200:8200"
+
+volumes:
+  kalypso-data:

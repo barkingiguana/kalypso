@@ -151,12 +151,40 @@ def issue(ctx: click.Context, domains: tuple[str, ...], hours: int, ip: tuple[st
 
 @main.command()
 @click.option("--watch/--no-watch", default=None, help="Auto-discover containers via Docker socket")
+@click.option(
+    "--auto-inject/--no-auto-inject",
+    default=True,
+    envvar="KALYPSO_AUTO_INJECT",
+    help="Inject certs directly into containers via Docker API",
+)
+@click.option(
+    "--auto-trust/--no-auto-trust",
+    default=True,
+    envvar="KALYPSO_AUTO_TRUST",
+    help="Inject CA into container system trust stores",
+)
+@click.option(
+    "--auto-reload/--no-auto-reload",
+    default=True,
+    envvar="KALYPSO_AUTO_RELOAD",
+    help="Auto-detect and run reload commands in containers",
+)
 @click.pass_context
-def serve(ctx: click.Context, watch: bool | None) -> None:
+def serve(
+    ctx: click.Context,
+    watch: bool | None,
+    auto_inject: bool,
+    auto_trust: bool,
+    auto_reload: bool,
+) -> None:
     """Start the Kalypso API server.
 
     With --watch (or when /var/run/docker.sock exists), Kalypso watches for
     containers with kalypso.domains labels and auto-issues certs for them.
+
+    By default, certs are injected directly into containers via the Docker
+    API (no shared volumes needed). Use --no-auto-inject to disable this
+    and fall back to shared-volume mode.
     """
     import threading
 
@@ -197,6 +225,14 @@ def serve(ctx: click.Context, watch: bool | None) -> None:
 
     if watch:
         click.echo("  Docker: Watching for containers with kalypso.domains labels")
+        if auto_inject:
+            click.echo("          Auto-inject: ON (certs injected directly into containers)")
+        else:
+            click.echo("          Auto-inject: OFF (shared-volume mode)")
+        if auto_trust:
+            click.echo("          Auto-trust:  ON (CA injected into container trust stores)")
+        if auto_reload:
+            click.echo("          Auto-reload: ON (reload commands auto-detected)")
         click.echo()
 
         def _start_watcher() -> None:
@@ -205,7 +241,13 @@ def serve(ctx: click.Context, watch: bool | None) -> None:
             from kalypso.server import get_ca
             from kalypso.docker_watcher import DockerWatcher
             ca = get_ca()
-            watcher = DockerWatcher(ca=ca, socket_path=str(docker_socket))
+            watcher = DockerWatcher(
+                ca=ca,
+                socket_path=str(docker_socket),
+                auto_inject=auto_inject,
+                auto_trust=auto_trust,
+                auto_reload=auto_reload,
+            )
             watcher.run()
 
         t = threading.Thread(target=_start_watcher, daemon=True)

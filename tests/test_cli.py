@@ -349,3 +349,39 @@ class TestStatusCommand:
         with tempfile.TemporaryDirectory() as td:
             result = runner.invoke(main, ["--data-dir", td, "status"])
             assert result.exit_code == 1
+
+
+class TestServeFlags:
+    """Test that serve command accepts the auto-inject/trust/reload flags."""
+
+    def test_serve_accepts_no_auto_inject(self):
+        runner = CliRunner()
+        # Just check the flag is accepted (will fail to start server, but no click error)
+        result = runner.invoke(main, ["serve", "--no-auto-inject", "--help"])
+        assert result.exit_code == 0
+
+    def test_serve_accepts_no_auto_trust(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["serve", "--no-auto-trust", "--help"])
+        assert result.exit_code == 0
+
+    def test_serve_accepts_no_auto_reload(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["serve", "--no-auto-reload", "--help"])
+        assert result.exit_code == 0
+
+    def test_serve_help_shows_flags(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["serve", "--help"])
+        assert result.exit_code == 0
+        assert "--auto-inject" in result.output
+        assert "--no-auto-inject" in result.output
+        assert "--auto-trust" in result.output
+        assert "--no-auto-trust" in result.output
+        assert "--auto-reload" in result.output
+        assert "--no-auto-reload" in result.output
+
+    def test_serve_help_shows_inject_description(self):
+        runner = CliRunner()
+        result = runner.invoke(main, ["serve", "--help"])
+        assert "Inject certs directly" in result.output

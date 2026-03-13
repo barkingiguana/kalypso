@@ -2,17 +2,20 @@
 
 When a container has a `kalypso.domains` label, Kalypso automatically:
 1. Issues a cert for those domains
-2. Writes cert files to the shared certs volume
-3. Sends a reload signal to the container (auto-detected for nginx/apache/haproxy)
-4. Renews before expiry
-
-No sidecar needed. No env vars on your services. Just labels.
+2. Injects cert files directly into the container (no shared volumes needed)
+3. Optionally injects the CA into the container's system trust store
+4. Sends a reload signal to the container (auto-detected or explicit)
+5. Renews before expiry
 
 Supported labels:
     kalypso.domains     Comma-separated domains (required)
-    kalypso.cert_dir    Subdirectory under /certs for this service (default: auto)
-    kalypso.hours       Cert lifetime in hours (default: 24)
+    kalypso.cert-path   Override cert path inside container
+    kalypso.key-path    Override key path inside container
+    kalypso.ca-path     Override CA cert path inside container
     kalypso.reload      Reload command (auto-detected for nginx/apache/haproxy)
+    kalypso.hours       Cert lifetime in hours (default: 24)
+    kalypso.trust       "false" to skip CA trust store injection for this container
+    kalypso.auto        "false" to disable image-based auto-detection
 
 Uses the Docker Engine API over the Unix socket. No docker-py dependency.
 """
@@ -20,33 +23,23 @@ Uses the Docker Engine API over the Unix socket. No docker-py dependency.
 from __future__ import annotations
 
 import http.client
-import io
 import json
 import logging
-import re
+import os
 import socket
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from kalypso.ca import CertificateAuthority
+from kalypso.image_profiles import FALLBACK_PROFILE, get_profile
+from kalypso.injector import build_tar
 
 logger = logging.getLogger("kalypso.docker")
 
-DEFAULT_CERT_DIR = Path("/certs")
 DEFAULT_HOURS = 24
 DOCKER_API_VERSION = "v1.41"
-
-# Auto-detect reload commands based on image name
-RELOAD_COMMANDS: dict[str, list[str]] = {
-    "nginx": ["nginx", "-s", "reload"],
-    "httpd": ["apachectl", "graceful"],
-    "apache": ["apachectl", "graceful"],
-    "haproxy": ["kill", "-USR2", "1"],
-    "caddy": ["caddy", "reload", "--config", "/etc/caddy/Caddyfile"],
-    "traefik": [],  # Traefik watches files automatically
-}
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -69,9 +62,12 @@ class ManagedService:
     container_id: str
     container_name: str
     domains: list[str]
-    cert_dir: Path
     hours: int
     reload_cmd: list[str] | None
+    cert_path: str
+    key_path: str
+    ca_path: str
+    inject_trust: bool = True
     last_issued: float = 0.0
 
 
@@ -81,7 +77,9 @@ class DockerWatcher:
 
     ca: CertificateAuthority
     socket_path: str = "/var/run/docker.sock"
-    certs_root: Path = DEFAULT_CERT_DIR
+    auto_inject: bool = True
+    auto_trust: bool = True
+    auto_reload: bool = True
     _services: dict[str, ManagedService] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -90,13 +88,14 @@ class DockerWatcher:
         method: str,
         path: str,
         body: bytes | None = None,
+        content_type: str = "application/json",
         timeout: int = 30,
     ) -> tuple[int, dict | list | str]:
         """Make a request to the Docker Engine API."""
         conn = UnixHTTPConnection(self.socket_path, timeout=timeout)
         headers = {}
         if body:
-            headers["Content-Type"] = "application/json"
+            headers["Content-Type"] = content_type
         conn.request(method, f"/{DOCKER_API_VERSION}{path}", body=body, headers=headers)
         resp = conn.getresponse()
         data = resp.read().decode()
@@ -106,18 +105,19 @@ class DockerWatcher:
         except json.JSONDecodeError:
             return resp.status, data
 
-    def _exec_in_container(self, container_id: str, cmd: list[str]) -> bool:
-        """Execute a command inside a container via Docker exec API."""
-        # Create exec instance
+    def _exec_in_container(self, container_id: str, cmd: list[str]) -> tuple[bool, str]:
+        """Execute a command inside a container via Docker exec API.
+
+        Returns ``(success, output)``."""
         body = json.dumps({"Cmd": cmd, "AttachStdout": True, "AttachStderr": True}).encode()
         status, data = self._request("POST", f"/containers/{container_id}/exec", body=body)
         if status != 201:
             logger.warning("Failed to create exec in %s: %s", container_id[:12], data)
-            return False
+            return False, ""
 
         exec_id = data["Id"]
 
-        # Start exec
+        # Start exec and capture output
         start_body = json.dumps({"Detach": False}).encode()
         conn = UnixHTTPConnection(self.socket_path, timeout=30)
         conn.request(
@@ -127,23 +127,83 @@ class DockerWatcher:
             headers={"Content-Type": "application/json"},
         )
         resp = conn.getresponse()
-        resp.read()
+        output = resp.read().decode(errors="replace")
         conn.close()
 
         # Check exec result
         status, result = self._request("GET", f"/exec/{exec_id}/json")
         if status == 200 and result.get("ExitCode", 1) == 0:
-            return True
+            return True, output
         logger.warning("Exec in %s exited %s", container_id[:12], result.get("ExitCode"))
+        return False, output
+
+    def _is_self(self, container: dict) -> bool:
+        """Return True if this container is the Kalypso instance itself."""
+        labels = container.get("Labels", {})
+        if labels.get("kalypso.self", "").lower() == "true":
+            return True
+        # Also check HOSTNAME match
+        my_hostname = os.environ.get("HOSTNAME", "")
+        if my_hostname and container.get("Id", "").startswith(my_hostname):
+            return True
         return False
 
-    def _detect_reload_cmd(self, image: str) -> list[str] | None:
-        """Auto-detect the reload command from the container image name."""
-        image_lower = image.lower().split("/")[-1].split(":")[0]
-        for pattern, cmd in RELOAD_COMMANDS.items():
-            if pattern in image_lower:
-                return cmd if cmd else None
-        return None
+    def _parse_container(self, container: dict) -> ManagedService | None:
+        """Parse a container's labels into a ManagedService."""
+        labels = container.get("Labels", {})
+        domains_str = labels.get("kalypso.domains", "")
+        if not domains_str:
+            return None
+
+        domains = [d.strip() for d in domains_str.split(",") if d.strip()]
+        if not domains:
+            return None
+
+        if self._is_self(container):
+            logger.debug("Skipping self: %s", container.get("Id", "")[:12])
+            return None
+
+        container_id = container.get("Id", "")
+        names = container.get("Names", [])
+        name = names[0].lstrip("/") if names else container_id[:12]
+
+        image = container.get("Image", "")
+        hours = int(labels.get("kalypso.hours", str(DEFAULT_HOURS)))
+
+        # Determine cert/key/ca paths: label overrides > image profile > fallback
+        auto_detect = labels.get("kalypso.auto", "").lower() != "false"
+        if auto_detect and self.auto_inject:
+            profile = get_profile(image)
+        else:
+            profile = FALLBACK_PROFILE
+
+        cert_path = labels.get("kalypso.cert-path", "").strip() or profile.cert_path
+        key_path = labels.get("kalypso.key-path", "").strip() or profile.key_path
+        ca_path = labels.get("kalypso.ca-path", "").strip() or profile.ca_path
+
+        # Reload command: explicit label > profile > none
+        reload_cmd: list[str] | None = None
+        if self.auto_reload:
+            reload_label = labels.get("kalypso.reload", "").strip()
+            if reload_label:
+                reload_cmd = reload_label.split()
+            elif auto_detect:
+                reload_cmd = profile.reload_cmd
+
+        # Trust store injection
+        inject_trust = self.auto_trust and labels.get("kalypso.trust", "").lower() != "false"
+
+        return ManagedService(
+            container_id=container_id,
+            container_name=name,
+            domains=domains,
+            hours=hours,
+            reload_cmd=reload_cmd,
+            cert_path=cert_path,
+            key_path=key_path,
+            ca_path=ca_path,
+            inject_trust=inject_trust,
+        )
 
     @staticmethod
     def _service_name(container: dict) -> str:
@@ -161,66 +221,132 @@ class DockerWatcher:
         names = container.get("Names", [])
         raw = names[0].lstrip("/") if names else container.get("Id", "")[:12]
 
-        # Docker Compose names look like "project-service-1".
-        # Strip the trailing replica number.
+        import re
+
         m = re.match(r"^(.+?)-(\d+)$", raw)
         if m:
             raw = m.group(1)
-
-        # If there's still a project prefix (contains a dash), take the last
-        # segment so "frontend-web" → "web".  But leave names without dashes
-        # alone ("web" stays "web").
         if "-" in raw:
             raw = raw.rsplit("-", 1)[-1]
 
         return raw
 
-    def _parse_container(self, container: dict) -> ManagedService | None:
-        """Parse a container's labels into a ManagedService."""
-        labels = container.get("Labels", {})
-        domains_str = labels.get("kalypso.domains", "")
-        if not domains_str:
-            return None
+    def _inject_files(self, svc: ManagedService, files: dict[str, bytes]) -> bool:
+        """Inject files into a container via Docker archive API."""
+        key_paths = frozenset([svc.key_path])
+        tar_data = build_tar(files, key_paths=key_paths)
 
-        domains = [d.strip() for d in domains_str.split(",") if d.strip()]
-        if not domains:
-            return None
-
-        container_id = container.get("Id", "")
-        # Container names from the list API have a leading "/"
-        names = container.get("Names", [])
-        name = names[0].lstrip("/") if names else container_id[:12]
-
-        # Determine cert output directory
-        cert_subdir = labels.get("kalypso.cert_dir", "").strip()
-        if cert_subdir:
-            cert_dir = self.certs_root / cert_subdir
-        else:
-            # Default: write directly to certs root (single service)
-            # If multiple services, use service name as subdirectory
-            cert_dir = self.certs_root
-
-        hours = int(labels.get("kalypso.hours", str(DEFAULT_HOURS)))
-
-        # Reload command: explicit label > auto-detect from image
-        reload_label = labels.get("kalypso.reload", "").strip()
-        if reload_label:
-            reload_cmd = reload_label.split()
-        else:
-            image = container.get("Image", "")
-            reload_cmd = self._detect_reload_cmd(image)
-
-        return ManagedService(
-            container_id=container_id,
-            container_name=name,
-            domains=domains,
-            cert_dir=cert_dir,
-            hours=hours,
-            reload_cmd=reload_cmd,
+        path_param = urllib.parse.quote("/", safe="")
+        conn = UnixHTTPConnection(self.socket_path, timeout=30)
+        conn.request(
+            "PUT",
+            f"/{DOCKER_API_VERSION}/containers/{svc.container_id}/archive?path={path_param}",
+            body=tar_data,
+            headers={"Content-Type": "application/x-tar"},
         )
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+
+        if resp.status == 200:
+            return True
+        logger.warning(
+            "Failed to inject files into %s: HTTP %d",
+            svc.container_name,
+            resp.status,
+        )
+        return False
+
+    def _detect_base_os(self, container_id: str) -> str | None:
+        """Probe the container OS by reading /etc/os-release.
+
+        Returns ``"debian"``, ``"rhel"``, or ``None``.
+        """
+        ok, output = self._exec_in_container(container_id, ["cat", "/etc/os-release"])
+        if not ok:
+            return None
+        output_lower = output.lower()
+        if any(d in output_lower for d in ("debian", "ubuntu", "alpine")):
+            return "debian"
+        if any(d in output_lower for d in ("rhel", "fedora", "centos", "rocky", "alma")):
+            return "rhel"
+        # Default to debian-style (most common Docker base)
+        return "debian"
+
+    def _inject_ca_trust(self, svc: ManagedService, ca_pem: bytes) -> None:
+        """Inject the CA into the container's system trust store."""
+        if not svc.inject_trust:
+            return
+
+        base_os = self._detect_base_os(svc.container_id)
+
+        if base_os == "rhel":
+            ca_dest = "/etc/pki/ca-trust/source/anchors/kalypso-dev-ca.pem"
+            update_cmd = ["update-ca-trust"]
+        else:
+            # Debian/Ubuntu/Alpine (default)
+            ca_dest = "/usr/local/share/ca-certificates/kalypso-dev-ca.crt"
+            update_cmd = ["update-ca-certificates"]
+
+        # Inject the CA cert file
+        tar_data = build_tar({ca_dest: ca_pem})
+        path_param = urllib.parse.quote("/", safe="")
+        conn = UnixHTTPConnection(self.socket_path, timeout=30)
+        conn.request(
+            "PUT",
+            f"/{DOCKER_API_VERSION}/containers/{svc.container_id}/archive?path={path_param}",
+            body=tar_data,
+            headers={"Content-Type": "application/x-tar"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+
+        if resp.status != 200:
+            logger.warning(
+                "Failed to inject CA into %s: HTTP %d",
+                svc.container_name,
+                resp.status,
+            )
+            return
+
+        # Run the update command
+        ok, _ = self._exec_in_container(svc.container_id, update_cmd)
+        if ok:
+            logger.info("CA trusted in %s (%s)", svc.container_name, base_os or "debian")
+        else:
+            # Try the other style as fallback
+            if base_os != "rhel":
+                fallback_dest = "/etc/pki/ca-trust/source/anchors/kalypso-dev-ca.pem"
+                fallback_cmd = ["update-ca-trust"]
+            else:
+                fallback_dest = "/usr/local/share/ca-certificates/kalypso-dev-ca.crt"
+                fallback_cmd = ["update-ca-certificates"]
+
+            tar_data = build_tar({fallback_dest: ca_pem})
+            conn = UnixHTTPConnection(self.socket_path, timeout=30)
+            conn.request(
+                "PUT",
+                f"/{DOCKER_API_VERSION}/containers/{svc.container_id}/archive?path={path_param}",
+                body=tar_data,
+                headers={"Content-Type": "application/x-tar"},
+            )
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+
+            ok2, _ = self._exec_in_container(svc.container_id, fallback_cmd)
+            if ok2:
+                logger.info("CA trusted in %s (fallback)", svc.container_name)
+            else:
+                logger.warning(
+                    "Could not update trust store in %s — update-ca-certificates "
+                    "and update-ca-trust both failed",
+                    svc.container_name,
+                )
 
     def _issue_for_service(self, svc: ManagedService) -> None:
-        """Issue a cert and write it for a managed service."""
+        """Issue a cert and deliver it to a managed service."""
         logger.info(
             "Issuing cert for %s: domains=%s",
             svc.container_name,
@@ -232,17 +358,33 @@ class DockerWatcher:
             logger.exception("Failed to issue cert for %s", svc.container_name)
             return
 
-        svc.cert_dir.mkdir(parents=True, exist_ok=True)
-        (svc.cert_dir / "cert.pem").write_text(bundle.cert_pem.decode())
-        (svc.cert_dir / "key.pem").write_text(bundle.key_pem.decode())
-        (svc.cert_dir / "ca.pem").write_text(self.ca.root.cert_pem.decode())
-        (svc.cert_dir / "fullchain.pem").write_text(
-            bundle.cert_pem.decode() + self.ca.root.cert_pem.decode()
-        )
+        ca_pem = self.ca.root.cert_pem
+        fullchain_path = svc.cert_path.rsplit("/", 1)[0] + "/fullchain.pem"
+
+        files = {
+            svc.cert_path: bundle.cert_pem,
+            svc.key_path: bundle.key_pem,
+            svc.ca_path: ca_pem,
+            fullchain_path: bundle.cert_pem + ca_pem,
+        }
+
+        if self.auto_inject:
+            ok = self._inject_files(svc, files)
+            if not ok:
+                logger.warning(
+                    "Injection failed for %s — container may have read-only filesystem",
+                    svc.container_name,
+                )
+                return
+        else:
+            logger.info(
+                "auto-inject off — cert issued for %s via API only (fingerprint=%s)",
+                svc.container_name,
+                bundle.cert_fingerprint,
+            )
 
         logger.info(
-            "Wrote certs to %s for %s (valid %dh, fingerprint=%s)",
-            svc.cert_dir,
+            "Cert delivered to %s (valid %dh, fingerprint=%s)",
             svc.container_name,
             svc.hours,
             bundle.cert_fingerprint,
@@ -250,72 +392,43 @@ class DockerWatcher:
 
         svc.last_issued = time.monotonic()
 
+        # Inject CA into system trust store
+        if self.auto_inject and self.auto_trust:
+            self._inject_ca_trust(svc, ca_pem)
+
         # Reload the service
-        if svc.reload_cmd:
+        if self.auto_reload and svc.reload_cmd:
             logger.info("Reloading %s: %s", svc.container_name, svc.reload_cmd)
-            ok = self._exec_in_container(svc.container_id, svc.reload_cmd)
+            ok, _ = self._exec_in_container(svc.container_id, svc.reload_cmd)
             if ok:
                 logger.info("Reloaded %s successfully", svc.container_name)
 
-    def discover(self) -> tuple[list[ManagedService], list[dict]]:
-        """Discover all running containers with kalypso.domains labels.
-
-        Returns ``(services, raw_containers)`` so callers can pass the raw
-        dicts to ``_handle_multiple_services`` for clean subdirectory naming.
-        """
+    def discover(self) -> list[ManagedService]:
+        """Discover all running containers with kalypso.domains labels."""
         status, containers = self._request(
             "GET",
             '/containers/json?filters={"label":["kalypso.domains"]}',
         )
         if status != 200:
             logger.error("Failed to list containers: %s %s", status, containers)
-            return [], []
+            return []
 
         services = []
-        matched: list[dict] = []
         for container in containers:
             svc = self._parse_container(container)
             if svc:
                 services.append(svc)
-                matched.append(container)
                 logger.info(
-                    "Discovered: %s → %s",
+                    "Discovered: %s → %s (cert=%s)",
                     svc.container_name,
                     svc.domains,
+                    svc.cert_path,
                 )
-        return services, matched
-
-    def _handle_multiple_services(
-        self,
-        services: list[ManagedService],
-        containers: list[dict] | None = None,
-    ) -> None:
-        """If multiple services are found, give each a subdirectory.
-
-        Uses the clean service name (from Compose label or stripped container
-        name) so paths look like ``/certs/web/`` not ``/certs/frontend-web-1/``.
-        """
-        if len(services) <= 1:
-            return
-
-        # Build a container-id → raw-container-dict lookup
-        by_id: dict[str, dict] = {}
-        if containers:
-            for c in containers:
-                by_id[c.get("Id", "")] = c
-
-        for svc in services:
-            if svc.cert_dir == self.certs_root:
-                raw = by_id.get(svc.container_id)
-                if raw:
-                    svc.cert_dir = self.certs_root / self._service_name(raw)
-                else:
-                    svc.cert_dir = self.certs_root / svc.container_name
+        return services
 
     def run_once(self) -> None:
         """Discover and issue certs for all labeled containers (one pass)."""
-        services, raw_containers = self.discover()
-        self._handle_multiple_services(services, raw_containers)
+        services = self.discover()
 
         with self._lock:
             self._services.clear()
@@ -328,7 +441,7 @@ class DockerWatcher:
     def _renewal_loop(self) -> None:
         """Periodically check if certs need renewal."""
         while True:
-            time.sleep(60)  # Check every minute
+            time.sleep(60)
             with self._lock:
                 for svc in list(self._services.values()):
                     renewal_at = svc.hours * 3600 * 0.5
@@ -346,7 +459,6 @@ class DockerWatcher:
                 conn.request("GET", f"/{DOCKER_API_VERSION}/events?filters={filters}")
                 resp = conn.getresponse()
 
-                # Stream events line by line
                 buf = b""
                 while True:
                     chunk = resp.read(4096)
@@ -369,7 +481,6 @@ class DockerWatcher:
                                 "Container started with kalypso.domains: %s",
                                 attrs.get("name", container_id[:12]),
                             )
-                            # Small delay for container to be fully ready
                             time.sleep(2)
                             self._on_container_start(container_id)
 
@@ -384,7 +495,6 @@ class DockerWatcher:
         if status != 200:
             return
 
-        # Convert inspect format to list format for _parse_container
         config = data.get("Config", {})
         container_info = {
             "Id": container_id,
@@ -398,9 +508,6 @@ class DockerWatcher:
             return
 
         with self._lock:
-            # If multiple services, use subdirectory
-            if self._services and svc.cert_dir == self.certs_root:
-                svc.cert_dir = self.certs_root / self._service_name(container_info)
             self._services[container_id] = svc
 
         self._issue_for_service(svc)
@@ -408,13 +515,18 @@ class DockerWatcher:
     def run(self) -> None:
         """Main entry point: discover, issue, then watch for changes."""
         logger.info("Docker watcher starting — looking for kalypso.* labels")
+        if self.auto_inject:
+            logger.info("Auto-inject: ON — certs injected directly into containers")
+        else:
+            logger.info("Auto-inject: OFF — certs available via API only")
+        if self.auto_trust:
+            logger.info("Auto-trust: ON — CA injected into container trust stores")
+        if self.auto_reload:
+            logger.info("Auto-reload: ON — reload commands auto-detected and executed")
 
-        # Initial discovery
         self.run_once()
 
-        # Start renewal thread
         renewal_thread = threading.Thread(target=self._renewal_loop, daemon=True)
         renewal_thread.start()
 
-        # Watch for new containers (blocks forever)
         self._event_loop()

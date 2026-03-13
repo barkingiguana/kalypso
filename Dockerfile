@@ -3,6 +3,7 @@ FROM python:3.12-slim AS base
 LABEL org.opencontainers.image.title="Kalypso"
 LABEL org.opencontainers.image.description="Local dev SSL certificate authority"
 LABEL org.opencontainers.image.source="https://github.com/kalypso-dev/kalypso"
+LABEL kalypso.self="true"
 
 WORKDIR /app
 
