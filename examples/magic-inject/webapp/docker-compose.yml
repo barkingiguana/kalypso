@@ -1,0 +1,22 @@
+# A totally independent project — no Kalypso awareness beyond the label.
+#
+# No shared volumes. No shared networks. No depends_on.
+# Kalypso discovers this container via the Docker socket and injects
+# certs directly into it at the well-known nginx paths.
+#
+# Usage:
+#   docker compose up -d
+#
+#   # Add to /etc/hosts:  127.0.0.1 myapp.local
+#   # Visit https://myapp.local
+
+services:
+  web:
+    image: nginx:alpine
+    labels:
+      kalypso.domains: "myapp.local,*.myapp.local"
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro

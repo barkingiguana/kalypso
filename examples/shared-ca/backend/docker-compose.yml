@@ -1,0 +1,25 @@
+# Backend API — uses the shared Kalypso CA for HTTPS.
+#
+# Prereqs:
+#   1. Start the shared Kalypso:  cd ../  &&  docker compose up -d
+#   2. Trust the CA once (see ../docker-compose.yml)
+#   3. Add to /etc/hosts:  127.0.0.1 api.local
+#
+# Usage:
+#   docker compose up -d
+#   # Visit https://api.local:8443
+#
+# No sidecar needed! Kalypso watches the Docker socket and auto-discovers
+# any container with `kalypso.domains` labels, across all Compose stacks.
+
+services:
+  api:
+    image: nginx:alpine
+    labels:
+      kalypso.domains: "api.local,*.api.local"
+      kalypso.cert_dir: "backend"
+    ports:
+      - "8443:443"
+    volumes:
+      - ${KALYPSO_CERTS_DIR:-~/.kalypso/certs}/backend:/etc/nginx/certs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro

@@ -44,10 +44,10 @@ class TestCertificateAuthorityInit:
         assert ku.value.digital_signature is True
         assert ku.critical is True
 
-    def test_root_uses_ecdsa_p256(self):
+    def test_root_uses_ecdsa_p384(self):
         ca = CertificateAuthority.init()
         pub = ca.root.private_key.public_key()
-        assert isinstance(pub.curve, ec.SECP256R1)
+        assert isinstance(pub.curve, ec.SECP384R1)
 
     def test_custom_organization(self):
         ca = CertificateAuthority.init(organization="Acme Corp")
@@ -198,6 +198,55 @@ class TestCertBundle:
 
             loaded = CertificateAuthority.load(cert_path, key_path, organization="Roundtrip Test")
             assert loaded.root.certificate.subject == ca.root.certificate.subject
+
+    def test_fingerprint_is_sha256_hex(self):
+        ca = CertificateAuthority.init()
+        fp = ca.root.cert_fingerprint
+        # SHA-256 = 64 hex chars + 31 colons = 95 chars
+        assert len(fp) == 95
+        assert ":" in fp
+
+    def test_fingerprints_differ_per_ca(self):
+        ca1 = CertificateAuthority.init()
+        ca2 = CertificateAuthority.init()
+        assert ca1.root.cert_fingerprint != ca2.root.cert_fingerprint
+
+    def test_save_creates_key_with_0600_permissions(self):
+        import stat
+        ca = CertificateAuthority.init()
+        with tempfile.TemporaryDirectory() as td:
+            cert_path = Path(td) / "cert.pem"
+            key_path = Path(td) / "key.pem"
+            ca.root.save(cert_path, key_path)
+
+            mode = key_path.stat().st_mode
+            # Owner should have read/write, group+other should have nothing
+            assert (mode & stat.S_IRWXG) == 0
+            assert (mode & stat.S_IRWXO) == 0
+
+
+class TestKeyPermissions:
+    def test_verify_key_permissions_secure(self):
+        from kalypso.ca import verify_key_permissions
+        ca = CertificateAuthority.init()
+        with tempfile.TemporaryDirectory() as td:
+            key_path = Path(td) / "key.pem"
+            ca.root.save(Path(td) / "cert.pem", key_path)
+            assert verify_key_permissions(key_path) is True
+
+    def test_verify_key_permissions_insecure(self):
+        import os
+        from kalypso.ca import verify_key_permissions
+        ca = CertificateAuthority.init()
+        with tempfile.TemporaryDirectory() as td:
+            key_path = Path(td) / "key.pem"
+            ca.root.save(Path(td) / "cert.pem", key_path)
+            os.chmod(str(key_path), 0o644)
+            assert verify_key_permissions(key_path) is False
+
+    def test_verify_key_permissions_missing_file(self):
+        from kalypso.ca import verify_key_permissions
+        assert verify_key_permissions(Path("/nonexistent")) is False
 
 
 class TestCertificateAuthorityLoad:

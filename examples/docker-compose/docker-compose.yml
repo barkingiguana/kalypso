@@ -1,17 +1,22 @@
-# Full example: Kalypso CA + nginx with auto-issued SSL certs.
+# Kalypso + nginx with automatic HTTPS.
 #
 # Usage:
 #   docker compose up -d
-#   # Trust the CA cert (one-time):
-#   curl -s http://localhost:8200/ca.pem | jq -r .certificate > kalypso-ca.pem
-#   # macOS:
-#   sudo security add-trusted-cert -d -r trustRoot \
-#     -k /Library/Keychains/System.keychain kalypso-ca.pem
-#   # Then visit https://myapp.local (after adding 127.0.0.1 myapp.local to /etc/hosts)
+#
+#   # Trust the CA cert on your host (one time):
+#   curl -s http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
+#   sudo kalypso trust  # or: sudo security add-trusted-cert ... (macOS)
+#
+#   # Add to /etc/hosts:
+#   127.0.0.1 myapp.local
+#
+#   # Visit https://myapp.local — it just works.
 
 services:
+  # 1. The CA server — issues and manages certificates
   kalypso:
     build: ../..
+    # image: kalypso/kalypso:latest
     volumes:
       - kalypso-data:/data
     ports:
@@ -22,32 +27,26 @@ services:
       timeout: 3s
       retries: 5
 
-  # One-shot init container that requests a cert and writes it to shared volume
-  cert-init:
-    image: curlimages/curl:latest
+  # 2. The sidecar — auto-issues certs and writes them to a shared volume
+  certs:
+    build: ../..
+    # image: kalypso/kalypso:latest
+    command: ["sidecar"]
     depends_on:
       kalypso:
         condition: service_healthy
+    environment:
+      KALYPSO_DOMAINS: "myapp.local,*.myapp.local"
+      KALYPSO_SERVER: "http://kalypso:8200"
     volumes:
       - certs:/certs
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        set -e
-        echo "Requesting certificate from Kalypso..."
-        RESPONSE=$$(curl -sf http://kalypso:8200/certificates \
-          -H 'Content-Type: application/json' \
-          -d '{"domains": ["myapp.local", "*.myapp.local"], "hours": 24}')
-        echo "$$RESPONSE" | sed -n 's/.*"certificate":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' > /certs/cert.pem
-        echo "$$RESPONSE" | sed -n 's/.*"private_key":"\([^"]*\)".*/\1/p' | sed 's/\\n/\n/g' > /certs/key.pem
-        echo "Certificate saved to /certs/"
 
+  # 3. Your web server — just mount the certs volume, done
   web:
     image: nginx:alpine
     depends_on:
-      cert-init:
-        condition: service_completed_successfully
+      certs:
+        condition: service_started
     ports:
       - "443:443"
       - "80:80"

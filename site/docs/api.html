@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Reference — Kalypso Docs</title>
+    <meta name="description" content="Kalypso REST API reference. Issue certificates, download CA cert, check health.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+    <a href="../" class="logo">kalypso</a>
+    <div class="nav-links">
+        <a href="getting-started.html">Getting Started</a>
+        <a href="api.html" class="active">API</a>
+        <a href="curl.html">curl</a>
+        <a href="security.html">Security</a>
+        <a href="docker.html">Docker</a>
+        <a href="https://github.com/kalypso-dev/kalypso">GitHub</a>
+    </div>
+</nav>
+
+<div class="layout">
+    <aside class="sidebar">
+        <h4>Documentation</h4>
+        <ul>
+            <li><a href="getting-started.html">Getting Started</a></li>
+            <li><a href="api.html" class="active">API Reference</a></li>
+            <li><a href="curl.html">curl Examples</a></li>
+            <li><a href="security.html">Security Model</a></li>
+            <li><a href="docker.html">Docker &amp; Compose</a></li>
+        </ul>
+        <h4 style="margin-top:2rem">On this page</h4>
+        <ul>
+            <li><a href="#health">GET /health</a></li>
+            <li><a href="#ca-pem">GET /ca.pem</a></li>
+            <li><a href="#ca-json">GET /ca.json</a></li>
+            <li><a href="#certificates">POST /certificates</a></li>
+            <li><a href="#openapi">OpenAPI / Swagger</a></li>
+        </ul>
+    </aside>
+
+    <main>
+        <h1>API Reference</h1>
+        <p>Base URL: <code>http://localhost:8200</code> (default)</p>
+        <p>The Kalypso API uses plain HTTP/JSON with no authentication. It is designed for local dev networks only.</p>
+
+        <h2 id="health"><code>GET /health</code></h2>
+        <p>Health check and statistics. Useful for Docker <code>HEALTHCHECK</code> and monitoring.</p>
+        <h3>Response</h3>
+        <pre><code>{
+  <span class="str">"status"</span>: <span class="str">"ok"</span>,
+  <span class="str">"ca_initialized"</span>: <span class="kw">true</span>,
+  <span class="str">"issued_count"</span>: 42
+}</code></pre>
+
+        <h2 id="ca-pem"><code>GET /ca.pem</code></h2>
+        <p>Download the root CA certificate as <strong>raw PEM</strong>. Save directly to a file — no JSON parsing needed.</p>
+        <h3>Response</h3>
+        <p>Content-Type: <code>application/x-pem-file</code></p>
+        <pre><code>-----BEGIN CERTIFICATE-----
+MIICxjCCAk2gAwIBAgIU...
+-----END CERTIFICATE-----</code></pre>
+        <h3>Usage</h3>
+        <pre><code>curl http://localhost:8200/ca.pem > kalypso-ca.pem</code></pre>
+
+        <h2 id="ca-json"><code>GET /ca.json</code></h2>
+        <p>CA certificate with metadata as JSON.</p>
+        <h3>Response</h3>
+        <pre><code>{
+  <span class="str">"certificate"</span>: <span class="str">"-----BEGIN CERTIFICATE-----\n..."</span>,
+  <span class="str">"fingerprint"</span>: <span class="str">"ab:cd:ef:..."</span>,
+  <span class="str">"not_before"</span>: <span class="str">"2025-01-01T00:00:00"</span>,
+  <span class="str">"not_after"</span>: <span class="str">"2035-01-01T00:00:00"</span>,
+  <span class="str">"subject"</span>: <span class="str">"CN=Kalypso Dev CA Root CA,O=Kalypso Dev CA"</span>
+}</code></pre>
+
+        <h2 id="certificates"><code>POST /certificates</code></h2>
+        <p>Issue a new short-lived SSL certificate.</p>
+
+        <h3>Request Body</h3>
+        <table>
+            <thead>
+                <tr><th>Field</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>domains</code></td><td><code>string[]</code></td><td>Yes</td><td>—</td><td>Domain names for the certificate</td></tr>
+                <tr><td><code>hours</code></td><td><code>int</code></td><td>No</td><td><code>24</code></td><td>Lifetime in hours (1–168)</td></tr>
+                <tr><td><code>ip_addresses</code></td><td><code>string[]</code></td><td>No</td><td><code>[]</code></td><td>IP SANs to include</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Example Request</h3>
+        <pre><code>{
+  <span class="str">"domains"</span>: [<span class="str">"myapp.local"</span>, <span class="str">"*.myapp.local"</span>],
+  <span class="str">"hours"</span>: 24,
+  <span class="str">"ip_addresses"</span>: [<span class="str">"127.0.0.1"</span>]
+}</code></pre>
+
+        <h3>Response</h3>
+        <pre><code>{
+  <span class="str">"certificate"</span>: <span class="str">"-----BEGIN CERTIFICATE-----\n..."</span>,
+  <span class="str">"private_key"</span>: <span class="str">"-----BEGIN PRIVATE KEY-----\n..."</span>,
+  <span class="str">"domains"</span>: [<span class="str">"myapp.local"</span>, <span class="str">"*.myapp.local"</span>],
+  <span class="str">"not_after"</span>: <span class="str">"2025-01-02T12:00:00Z"</span>,
+  <span class="str">"ca_certificate"</span>: <span class="str">"-----BEGIN CERTIFICATE-----\n..."</span>
+}</code></pre>
+
+        <h3>Error Responses</h3>
+        <ul>
+            <li><code>422</code> — Invalid request (empty domains, invalid hours, etc.)</li>
+        </ul>
+
+        <h2 id="openapi">OpenAPI / Swagger</h2>
+        <p>When the server is running, visit these URLs for interactive API documentation:</p>
+        <ul>
+            <li><strong>Swagger UI:</strong> <code>http://localhost:8200/docs</code></li>
+            <li><strong>ReDoc:</strong> <code>http://localhost:8200/redoc</code></li>
+        </ul>
+
+        <h2>Security Considerations</h2>
+        <ul>
+            <li>The API has <strong>no authentication</strong> — it's designed for local dev only</li>
+            <li>Never expose port 8200 to the public internet</li>
+            <li>The CA private key is stored at <code>/data/ca-key.pem</code> inside the container</li>
+            <li>All issued certificates are short-lived (max 7 days)</li>
+        </ul>
+
+        <div class="next-page">
+            <a href="curl.html">Next: curl Examples &rarr;</a>
+        </div>
+    </main>
+</div>
+
+</body>
+</html>

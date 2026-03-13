@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from kalypso.ca import DEFAULT_CERT_HOURS, MAX_CERT_HOURS, CertificateAuthority
+from kalypso.ca import DEFAULT_CERT_HOURS, MAX_CERT_HOURS, CertificateAuthority, fingerprint
 
 logger = logging.getLogger("kalypso")
 
@@ -68,6 +70,19 @@ def get_ca() -> CertificateAuthority:
     if _ca is not None:
         return _ca
 
+    # Support importing external CAs via env vars (e.g. from mkcert or corporate CA)
+    env_cert = os.environ.get("KALYPSO_CA_CERT")
+    env_key = os.environ.get("KALYPSO_CA_KEY")
+
+    if env_cert and env_key:
+        env_cert_path = Path(env_cert)
+        env_key_path = Path(env_key)
+        if env_cert_path.exists() and env_key_path.exists():
+            logger.info("Loading external CA from KALYPSO_CA_CERT=%s", env_cert)
+            _ca = CertificateAuthority.load(env_cert_path, env_key_path)
+            return _ca
+        logger.warning("KALYPSO_CA_CERT/KEY set but files not found, falling back")
+
     if CA_CERT_PATH.exists() and CA_KEY_PATH.exists():
         logger.info("Loading existing CA from %s", CA_CERT_PATH)
         _ca = CertificateAuthority.load(CA_CERT_PATH, CA_KEY_PATH)
@@ -99,11 +114,31 @@ def health() -> HealthResponse:
     )
 
 
-@app.get("/ca.pem")
-def ca_certificate() -> dict:
-    """Download the CA root certificate (trust this once)."""
+@app.get("/ca.pem", response_class=PlainTextResponse)
+def ca_certificate_pem() -> PlainTextResponse:
+    """Download the CA root certificate as raw PEM (trust this once).
+
+    Usage: curl http://localhost:8200/ca.pem > kalypso-ca.pem
+    """
     ca = get_ca()
-    return {"certificate": ca.root.cert_pem.decode()}
+    return PlainTextResponse(
+        content=ca.root.cert_pem.decode(),
+        media_type="application/x-pem-file",
+    )
+
+
+@app.get("/ca.json")
+def ca_certificate_json() -> dict:
+    """CA certificate with metadata as JSON."""
+    ca = get_ca()
+    cert = ca.root.certificate
+    return {
+        "certificate": ca.root.cert_pem.decode(),
+        "fingerprint": fingerprint(cert),
+        "not_before": cert.not_valid_before_utc.isoformat(),
+        "not_after": cert.not_valid_after_utc.isoformat(),
+        "subject": cert.subject.rfc4514_string(),
+    }
 
 
 @app.post("/certificates", response_model=IssueResponse)
