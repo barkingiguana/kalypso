@@ -330,8 +330,8 @@
         </div>
         <div class="feature">
             <div class="feature-icon">&#128230;</div>
-            <h3>Docker Magic Mode</h3>
-            <p>Add a label to your container. Kalypso auto-discovers it, issues certs, and reloads nginx.</p>
+            <h3>Zero-Config Docker</h3>
+            <p>Add a label. Kalypso injects certs directly into your container — no shared volumes, no shared networks.</p>
         </div>
         <div class="feature">
             <div class="feature-icon">&#128260;</div>
@@ -389,29 +389,21 @@ kalypso issue myapp.local
                     <span class="dot dot-red"></span>
                     <span class="dot dot-yellow"></span>
                     <span class="dot dot-green"></span>
-                    docker-compose.yml
+                    Your project's docker-compose.yml
                 </div>
-                <pre><span class="kw">services</span>:
-  <span class="fn">kalypso</span>:
-    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
-    <span class="kw">ports</span>: [<span class="str">"8200:8200"</span>]
-    <span class="kw">volumes</span>: [<span class="str">kalypso-data:/data</span>]
-
-  <span class="fn">certs</span>:  <span class="cmt"># magic sidecar</span>
-    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
-    <span class="kw">command</span>: [<span class="str">"sidecar"</span>]
-    <span class="kw">environment</span>:
-      <span class="fn">KALYPSO_DOMAINS</span>: <span class="str">"myapp.local"</span>
-    <span class="kw">volumes</span>: [<span class="str">certs:/certs</span>]
-
+                <pre><span class="cmt"># Just add a label. That's it.</span>
+<span class="kw">services</span>:
   <span class="fn">web</span>:
     <span class="kw">image</span>: <span class="str">nginx:alpine</span>
-    <span class="kw">volumes</span>:
-      - <span class="str">certs:/etc/nginx/certs:ro</span>
+    <span class="kw">labels</span>:
+      <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local"</span>
+    <span class="kw">ports</span>:
+      - <span class="str">"443:443"</span>
 
-<span class="kw">volumes</span>:
-  <span class="fn">kalypso-data</span>:
-  <span class="fn">certs</span>:</pre>
+<span class="cmt"># No shared volumes.</span>
+<span class="cmt"># No shared networks.</span>
+<span class="cmt"># No sidecar.</span>
+<span class="cmt"># Kalypso injects certs directly.</span></pre>
             </div>
         </div>
     </div>
@@ -481,8 +473,8 @@ cert.<span class="fn">Save</span>(<span class="str">"cert.pem"</span>, <span cla
                     <td class="check">ACME</td>
                 </tr>
                 <tr>
-                    <td>Docker sidecar</td>
-                    <td class="check">Yes</td>
+                    <td>Zero-config Docker</td>
+                    <td class="check">One label</td>
                     <td class="cross">No</td>
                     <td class="cross">No</td>
                     <td class="cross">Complex</td>
