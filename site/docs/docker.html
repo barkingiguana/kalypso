@@ -36,6 +36,7 @@
             <li><a href="#labels">Labels Reference</a></li>
             <li><a href="#auto-reload">Auto-Reload</a></li>
             <li><a href="#trust">Trust the CA</a></li>
+            <li><a href="#shared-ca">Shared CA (Multi-Project)</a></li>
             <li><a href="#sidecar">Sidecar Mode</a></li>
             <li><a href="#containers">Inter-Container TLS</a></li>
         </ul>
@@ -147,6 +148,39 @@ sudo trust anchor /tmp/kalypso-ca.pem</code></pre>
 
         <p>Then add to <code>/etc/hosts</code>:</p>
         <pre><code>127.0.0.1 myapp.local</code></pre>
+
+        <h2 id="shared-ca">Shared CA (Multi-Project)</h2>
+        <p>Run Kalypso <strong>once</strong> with the Docker socket. Every project on the machine gets HTTPS — no sidecars, no shared networks.</p>
+
+        <h3>1. Start Kalypso (once)</h3>
+        <pre><code><span class="cmt"># docker-compose.yml for the shared Kalypso</span>
+<span class="kw">services</span>:
+  <span class="fn">kalypso</span>:
+    <span class="kw">image</span>: <span class="str">kalypso/kalypso:latest</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">/var/run/docker.sock:/var/run/docker.sock:ro</span>
+      - <span class="str">kalypso-data:/data</span>
+      - <span class="str">~/.kalypso/certs:/certs</span>
+    <span class="kw">ports</span>:
+      - <span class="str">"8200:8200"</span>
+
+<span class="kw">volumes</span>:
+  <span class="fn">kalypso-data</span>:</code></pre>
+
+        <h3>2. Add labels to any project</h3>
+        <pre><code><span class="cmt"># In any other Compose stack — no sidecar needed</span>
+<span class="kw">services</span>:
+  <span class="fn">web</span>:
+    <span class="kw">image</span>: <span class="str">nginx:alpine</span>
+    <span class="kw">labels</span>:
+      <span class="fn">kalypso.domains</span>: <span class="str">"myapp.local"</span>
+      <span class="fn">kalypso.cert_dir</span>: <span class="str">"myapp"</span>
+    <span class="kw">volumes</span>:
+      - <span class="str">~/.kalypso/certs/myapp:/etc/nginx/certs:ro</span></code></pre>
+
+        <p>Kalypso watches the Docker socket for <em>all</em> containers on the host. When your project starts, it auto-discovers it, issues a cert, writes it to the shared host directory, and reloads nginx.</p>
+
+        <p>See <a href="https://github.com/kalypso-dev/kalypso/tree/main/examples/shared-ca"><code>examples/shared-ca/</code></a> for a full multi-project setup.</p>
 
         <h2 id="sidecar">Sidecar Mode (Alternative)</h2>
         <p>If you don't want to mount the Docker socket, use the sidecar pattern instead. Add a second Kalypso container with <code>command: ["sidecar"]</code>:</p>

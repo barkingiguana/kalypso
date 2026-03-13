@@ -154,6 +154,36 @@ class TestIssueForService:
         assert svc.last_issued > 0.0
 
 
+class TestServiceName:
+    def test_compose_label_preferred(self, watcher: DockerWatcher):
+        container = {
+            "Id": "abc123",
+            "Names": ["/frontend-web-1"],
+            "Labels": {"com.docker.compose.service": "web"},
+        }
+        assert DockerWatcher._service_name(container) == "web"
+
+    def test_strips_replica_suffix(self, watcher: DockerWatcher):
+        container = {"Id": "abc", "Names": ["/myproject-web-1"], "Labels": {}}
+        assert DockerWatcher._service_name(container) == "web"
+
+    def test_strips_project_prefix(self, watcher: DockerWatcher):
+        container = {"Id": "abc", "Names": ["/frontend-web"], "Labels": {}}
+        assert DockerWatcher._service_name(container) == "web"
+
+    def test_plain_name_unchanged(self, watcher: DockerWatcher):
+        container = {"Id": "abc", "Names": ["/web"], "Labels": {}}
+        assert DockerWatcher._service_name(container) == "web"
+
+    def test_fallback_to_container_id(self, watcher: DockerWatcher):
+        container = {"Id": "abc123deadbeef", "Names": [], "Labels": {}}
+        assert DockerWatcher._service_name(container) == "abc123deadbe"
+
+    def test_complex_compose_name(self, watcher: DockerWatcher):
+        container = {"Id": "abc", "Names": ["/shared-ca-frontend-web-1"], "Labels": {}}
+        assert DockerWatcher._service_name(container) == "web"
+
+
 class TestHandleMultipleServices:
     def test_single_service_uses_root(self, watcher: DockerWatcher):
         svc = ManagedService(
@@ -168,6 +198,32 @@ class TestHandleMultipleServices:
         assert svc.cert_dir == watcher.certs_root
 
     def test_multiple_services_get_subdirs(self, watcher: DockerWatcher):
+        svc1 = ManagedService(
+            container_id="a",
+            container_name="frontend-web-1",
+            domains=["web.local"],
+            cert_dir=watcher.certs_root,
+            hours=24,
+            reload_cmd=None,
+        )
+        svc2 = ManagedService(
+            container_id="b",
+            container_name="backend-api-1",
+            domains=["api.local"],
+            cert_dir=watcher.certs_root,
+            hours=24,
+            reload_cmd=None,
+        )
+        containers = [
+            {"Id": "a", "Names": ["/frontend-web-1"], "Labels": {"com.docker.compose.service": "web"}},
+            {"Id": "b", "Names": ["/backend-api-1"], "Labels": {"com.docker.compose.service": "api"}},
+        ]
+        watcher._handle_multiple_services([svc1, svc2], containers)
+        assert svc1.cert_dir == watcher.certs_root / "web"
+        assert svc2.cert_dir == watcher.certs_root / "api"
+
+    def test_fallback_to_container_name_without_raw(self, watcher: DockerWatcher):
+        """When no raw container dicts are provided, falls back to container_name."""
         svc1 = ManagedService(
             container_id="a",
             container_name="web",

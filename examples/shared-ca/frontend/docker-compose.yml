@@ -8,36 +8,19 @@
 # Usage:
 #   docker compose up -d
 #   # Visit https://frontend.local
+#
+# No sidecar needed! Kalypso watches the Docker socket and auto-discovers
+# any container with `kalypso.domains` labels, across all Compose stacks.
 
 services:
-  # Sidecar fetches certs from the shared Kalypso
-  certs:
-    build: ../../..
-    # image: kalypso/kalypso:latest
-    command: ["sidecar"]
-    environment:
-      KALYPSO_DOMAINS: "frontend.local,*.frontend.local"
-      KALYPSO_SERVER: "http://kalypso:8200"
-    volumes:
-      - certs:/certs
-    networks:
-      - kalypso
-
   web:
     image: nginx:alpine
-    depends_on:
-      certs:
-        condition: service_started
+    labels:
+      kalypso.domains: "frontend.local,*.frontend.local"
+      kalypso.cert_dir: "frontend"
     ports:
       - "443:443"
       - "80:80"
     volumes:
-      - certs:/etc/nginx/certs:ro
+      - ${KALYPSO_CERTS_DIR:-~/.kalypso/certs}/frontend:/etc/nginx/certs:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-
-volumes:
-  certs:
-
-networks:
-  kalypso:
-    external: true

@@ -23,6 +23,7 @@ import http.client
 import io
 import json
 import logging
+import re
 import socket
 import threading
 import time
@@ -144,6 +145,36 @@ class DockerWatcher:
                 return cmd if cmd else None
         return None
 
+    @staticmethod
+    def _service_name(container: dict) -> str:
+        """Extract a clean service name from a container.
+
+        Prefers the Docker Compose ``com.docker.compose.service`` label.
+        Falls back to stripping the Compose ``{project}-{service}-{N}``
+        pattern from the container name.
+        """
+        labels = container.get("Labels", {})
+        compose_svc = labels.get("com.docker.compose.service", "").strip()
+        if compose_svc:
+            return compose_svc
+
+        names = container.get("Names", [])
+        raw = names[0].lstrip("/") if names else container.get("Id", "")[:12]
+
+        # Docker Compose names look like "project-service-1".
+        # Strip the trailing replica number.
+        m = re.match(r"^(.+?)-(\d+)$", raw)
+        if m:
+            raw = m.group(1)
+
+        # If there's still a project prefix (contains a dash), take the last
+        # segment so "frontend-web" → "web".  But leave names without dashes
+        # alone ("web" stays "web").
+        if "-" in raw:
+            raw = raw.rsplit("-", 1)[-1]
+
+        return raw
+
     def _parse_container(self, container: dict) -> ManagedService | None:
         """Parse a container's labels into a ManagedService."""
         labels = container.get("Labels", {})
@@ -226,39 +257,65 @@ class DockerWatcher:
             if ok:
                 logger.info("Reloaded %s successfully", svc.container_name)
 
-    def discover(self) -> list[ManagedService]:
-        """Discover all running containers with kalypso.domains labels."""
+    def discover(self) -> tuple[list[ManagedService], list[dict]]:
+        """Discover all running containers with kalypso.domains labels.
+
+        Returns ``(services, raw_containers)`` so callers can pass the raw
+        dicts to ``_handle_multiple_services`` for clean subdirectory naming.
+        """
         status, containers = self._request(
             "GET",
             '/containers/json?filters={"label":["kalypso.domains"]}',
         )
         if status != 200:
             logger.error("Failed to list containers: %s %s", status, containers)
-            return []
+            return [], []
 
         services = []
+        matched: list[dict] = []
         for container in containers:
             svc = self._parse_container(container)
             if svc:
                 services.append(svc)
+                matched.append(container)
                 logger.info(
                     "Discovered: %s → %s",
                     svc.container_name,
                     svc.domains,
                 )
-        return services
+        return services, matched
 
-    def _handle_multiple_services(self, services: list[ManagedService]) -> None:
-        """If multiple services are found, give each a subdirectory."""
-        if len(services) > 1:
-            for svc in services:
-                if svc.cert_dir == self.certs_root:
+    def _handle_multiple_services(
+        self,
+        services: list[ManagedService],
+        containers: list[dict] | None = None,
+    ) -> None:
+        """If multiple services are found, give each a subdirectory.
+
+        Uses the clean service name (from Compose label or stripped container
+        name) so paths look like ``/certs/web/`` not ``/certs/frontend-web-1/``.
+        """
+        if len(services) <= 1:
+            return
+
+        # Build a container-id → raw-container-dict lookup
+        by_id: dict[str, dict] = {}
+        if containers:
+            for c in containers:
+                by_id[c.get("Id", "")] = c
+
+        for svc in services:
+            if svc.cert_dir == self.certs_root:
+                raw = by_id.get(svc.container_id)
+                if raw:
+                    svc.cert_dir = self.certs_root / self._service_name(raw)
+                else:
                     svc.cert_dir = self.certs_root / svc.container_name
 
     def run_once(self) -> None:
         """Discover and issue certs for all labeled containers (one pass)."""
-        services = self.discover()
-        self._handle_multiple_services(services)
+        services, raw_containers = self.discover()
+        self._handle_multiple_services(services, raw_containers)
 
         with self._lock:
             self._services.clear()
@@ -343,7 +400,7 @@ class DockerWatcher:
         with self._lock:
             # If multiple services, use subdirectory
             if self._services and svc.cert_dir == self.certs_root:
-                svc.cert_dir = self.certs_root / svc.container_name
+                svc.cert_dir = self.certs_root / self._service_name(container_info)
             self._services[container_id] = svc
 
         self._issue_for_service(svc)

@@ -6,20 +6,33 @@ Run Kalypso once. Every project on the machine gets trusted HTTPS from the same 
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  "kalypso" network                   │
+│                  Host machine                        │
 │                                                     │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐      │
-│  │ Kalypso  │    │ frontend │    │ backend  │      │
-│  │ CA       │◄───│ sidecar  │    │ sidecar  │      │
-│  │ :8200    │    └────┬─────┘    └────┬─────┘      │
-│  └──────────┘         │               │             │
-│                       ▼               ▼             │
-│                 ┌──────────┐   ┌──────────┐        │
-│                 │  nginx   │   │  nginx   │        │
-│                 │  :443    │   │  :8443   │        │
-│                 └──────────┘   └──────────┘        │
+│  ┌──────────┐                                       │
+│  │ Kalypso  │──── Docker socket ──── watches ALL    │
+│  │ :8200    │     /var/run/docker.sock  containers  │
+│  └────┬─────┘                                       │
+│       │ writes certs to ~/.kalypso/certs/           │
+│       │                                             │
+│       ├── frontend/  ◄── mounted by frontend stack  │
+│       └── backend/   ◄── mounted by backend stack   │
+│                                                     │
+│  ┌──────────┐   ┌──────────┐                        │
+│  │  nginx   │   │  nginx   │   (separate compose    │
+│  │  :443    │   │  :8443   │    stacks, no sidecar) │
+│  └──────────┘   └──────────┘                        │
 └─────────────────────────────────────────────────────┘
 ```
+
+## How It Works
+
+Kalypso watches the **Docker socket** — it sees every container on the host, regardless of which Compose stack it belongs to. No sidecars, no shared networks.
+
+1. Kalypso runs once with the Docker socket mounted
+2. It watches for any container with a `kalypso.domains` label
+3. When it sees one, it issues a cert and writes it to `/certs/{cert_dir}/`
+4. The host bind mount (`~/.kalypso/certs`) makes certs available to all stacks
+5. Kalypso auto-detects nginx/apache/haproxy and sends a reload signal
 
 ## Setup
 
@@ -56,6 +69,8 @@ cd backend/
 docker compose up -d
 ```
 
+Kalypso sees the new containers start, issues certs, writes them, and reloads nginx — automatically.
+
 ### 4. Add to /etc/hosts
 
 ```
@@ -68,49 +83,35 @@ docker compose up -d
 - https://api.local:8443 — green lock
 - Both signed by the same CA
 
-## How It Works
-
-The key is a **named Docker network** called `kalypso`:
-
-- The shared `docker-compose.yml` creates it: `networks: kalypso: name: kalypso`
-- Each project joins it: `networks: kalypso: external: true`
-- The sidecar in each project can reach `http://kalypso:8200` over this network
-- Each project gets its own certs volume — no conflicts
-
 ## Adding a New Project
 
-Three things in your project's `docker-compose.yml`:
+Two things in your project's `docker-compose.yml`:
 
 ```yaml
 services:
-  # 1. Add a sidecar that talks to the shared Kalypso
-  certs:
-    image: kalypso/kalypso:latest
-    command: ["sidecar"]
-    environment:
-      KALYPSO_DOMAINS: "myproject.local"
-      KALYPSO_SERVER: "http://kalypso:8200"
-    volumes:
-      - certs:/certs
-    networks:
-      - kalypso           # join the shared network
-
-  # 2. Mount certs into your service
   web:
     image: nginx:alpine
+    labels:
+      # 1. Tell Kalypso what domains you want
+      kalypso.domains: "myproject.local"
+      kalypso.cert_dir: "myproject"
     volumes:
-      - certs:/etc/nginx/certs:ro
-
-volumes:
-  certs:
-
-# 3. Reference the external network
-networks:
-  kalypso:
-    external: true
+      # 2. Mount the cert subdirectory
+      - ~/.kalypso/certs/myproject:/etc/nginx/certs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "9443:443"
 ```
 
-That's it. The sidecar handles issuance, renewal, and writes cert/key/ca/fullchain to `/certs`.
+That's it. No sidecar container. No shared Docker network. Kalypso watches the socket, issues certs, writes them to the host bind mount, and reloads your server.
+
+## Custom Certs Directory
+
+By default, certs are written to `~/.kalypso/certs`. Override with:
+
+```bash
+KALYPSO_CERTS_DIR=/opt/certs docker compose up -d
+```
 
 ## Importing a Corporate CA
 
@@ -122,18 +123,6 @@ docker compose down
 docker compose run --rm kalypso import-ca \
   --cert /data/corp-ca.pem --key /data/corp-ca-key.pem
 docker compose up -d
-```
-
-Or mount the CA files directly:
-
-```yaml
-# In the shared docker-compose.yml
-services:
-  kalypso:
-    image: kalypso/kalypso:latest
-    volumes:
-      - ./corp-ca.pem:/data/ca-cert.pem:ro
-      - ./corp-ca-key.pem:/data/ca-key.pem:ro
 ```
 
 Now every project gets certs signed by the corporate CA — no per-project trust needed.

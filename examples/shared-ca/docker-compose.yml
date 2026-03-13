@@ -1,6 +1,6 @@
 # Shared Kalypso CA — one instance, many projects.
 #
-# Start this ONCE. Every dev project connects to it.
+# Start this ONCE. Every dev project on the machine gets trusted HTTPS.
 #
 # Usage:
 #   docker compose up -d
@@ -10,18 +10,21 @@
 #   # macOS:  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
 #   # Ubuntu: sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt && sudo update-ca-certificates
 #
-# Projects connect by joining the "kalypso" network (see frontend/ and backend/ examples).
+# How it works:
+#   Kalypso watches the Docker socket for ANY container with `kalypso.domains`
+#   labels — across all Compose stacks on this host. No sidecar needed.
+#   Each project just adds labels and mounts its cert subdirectory.
 
 services:
   kalypso:
     build: ../../..
     # image: kalypso/kalypso:latest
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - kalypso-data:/data
+      - ${KALYPSO_CERTS_DIR:-~/.kalypso/certs}:/certs
     ports:
       - "8200:8200"
-    networks:
-      - kalypso
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
       interval: 5s
@@ -30,7 +33,3 @@ services:
 
 volumes:
   kalypso-data:
-
-networks:
-  kalypso:
-    name: kalypso
