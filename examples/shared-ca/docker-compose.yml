@@ -1,0 +1,36 @@
+# Shared Kalypso CA — one instance, many projects.
+#
+# Start this ONCE. Every dev project connects to it.
+#
+# Usage:
+#   docker compose up -d
+#
+#   # Trust the CA (one time):
+#   curl http://localhost:8200/ca.pem > /tmp/kalypso-ca.pem
+#   # macOS:  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/kalypso-ca.pem
+#   # Ubuntu: sudo cp /tmp/kalypso-ca.pem /usr/local/share/ca-certificates/kalypso.crt && sudo update-ca-certificates
+#
+# Projects connect by joining the "kalypso" network (see frontend/ and backend/ examples).
+
+services:
+  kalypso:
+    build: ../../..
+    # image: kalypso/kalypso:latest
+    volumes:
+      - kalypso-data:/data
+    ports:
+      - "8200:8200"
+    networks:
+      - kalypso
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  kalypso-data:
+
+networks:
+  kalypso:
+    name: kalypso
